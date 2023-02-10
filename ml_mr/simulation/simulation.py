@@ -59,6 +59,17 @@ class Simulation:
         # in _data.
         self._sim_variables: Dict[str, Variable] = {}
 
+    @property
+    def parameters(self):
+        class _ParameterDict:
+            def __getitem__(self2, name: str) -> Any:
+                return self.get_sim_parameter(name)
+
+            def __setitem__(self2, name: str, value: Any) -> None:
+                self.add_sim_parameter(name, value)
+
+        return _ParameterDict()
+
     def _check_var_name(self, name, strict=False):
         if name in self._sim_variables:
             message = f"Variable named '{name}' already exists"
