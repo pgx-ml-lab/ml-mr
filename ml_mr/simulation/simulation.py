@@ -144,6 +144,24 @@ class Simulation:
             index=False
         )
 
+    def save_pickle(self, filename):
+        try:
+            import dill as pickle
+        except ImportError:
+            raise RuntimeError(
+                "The 'dill' package is needed to serialize simulations.\n"
+                "Use 'pip install dill' to install it."
+            )
+
+        with open(filename, "wb") as f:
+            pickle.dump(self, f)
+
+    @classmethod
+    def load_pickle(cls, filename):
+        import dill as pickle
+        with open(filename, "rb") as f:
+            return pickle.load(f)
+
 
 class Variable:
     def __init__(self, name, data=None):
