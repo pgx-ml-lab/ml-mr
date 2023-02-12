@@ -48,7 +48,8 @@ def setup_package():
         license="MIT",
         # test_suite="ml_mr.tests.test_suite",
         install_requires=["numpy >= 1.11.0", "pandas >= 0.19.0",
-                          "setuptools >= 26.1.0"],
+                          "setuptools >= 26.1.0",
+                          "pytorch_lightning >= 1.0.0"],
         packages=find_packages(),
         classifiers=["Development Status :: 4 - Beta",
                      "Intended Audience :: Science/Research",
@@ -62,6 +63,11 @@ def setup_package():
                      "Programming Language :: Python :: 3.6",
                      "Topic :: Scientific/Engineering :: Bio-Informatics"],
         keywords="statistics causal instrumental variable genetics",
+        entry_points={
+            "console_scripts": [
+                "ml-mr=ml_mr.cli:main"
+            ]
+        }
     )
 
 
