@@ -7,14 +7,23 @@ or a histogram.
 
 """
 
-from typing import Literal, Iterator, Iterable
+import sys
+import argparse
+from typing import Literal, Iterator, Iterable, Optional, Tuple
 
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
 import pytorch_lightning as pl
+from pytorch_genotypes.dataset import (
+    GeneticDatasetBackend,
+    PhenotypeGeneticDataset
+)
 
-from ..utils import MLP
+from ..utils import MLP, read_data
+from ..logging import info, critical
 
 
 BINNING_MODES = ["histogram", "qantiles"]
@@ -151,7 +160,143 @@ def main(args):
         --outcome-weight-decay 0 \
 
     """
-    print("Main!", args)
+    validate_args(args)
+
+    # Read the data.
+    expected_cols = [args.exposure, args.outcome]
+    expected_cols += args.instrument
+    expected_cols += args.covariables
+
+    data = read_data(args.data, args.sep, expected_cols)
+
+    # TODO serialize and maybe do basic model evaluation.
+    train_exposure_model(args, data)
+
+
+def validate_args(args: argparse.Namespace):
+    if args.genotypes is not None and args.sample_id_col is None:
+        critical(
+            "When providing a genotypes dataset for the instrument, a "
+            "sample id column needs to be provided using --sample-id-col "
+            "so that the individuals can be matched between the genotypes "
+            "and data file."
+        )
+        sys.exit(1)
+
+
+def get_dataset_and_binning(
+    args: argparse.Namespace,
+    data: pd.DataFrame,
+    backend: Optional[GeneticDatasetBackend],
+    endogenous_column: str,
+    exogenous_columns: Iterable[str]
+) -> Tuple[Dataset, Binning]:
+    # If we have a backend, we need to add the genotypes to the exogenous
+    # variable.
+    if backend is not None:
+        genetic_dataset = PhenotypeGeneticDataset(
+            backend,
+            data,
+            args.sample_id_col,
+            endogenous_columns=[endogenous_column],
+            exogenous_columns=exogenous_columns
+        )
+        return _dataset_from_genetic_dataset(
+            args,
+            genetic_dataset,
+            endogenous_column,
+            exogenous_columns
+        )
+
+    else:
+        exposure_tens = torch.from_numpy(data[endogenous_column].values)
+        binning = Binning(
+            exposure_tens,
+            mode="histogram" if args.histogram else "quantiles",
+            n_bins=args.n_bins
+        )
+
+        bins = binning.values_to_bin_indices(exposure_tens, one_hot=True)
+        exogenous = torch.from_numpy(data[exogenous_columns].values)
+
+        class _Dataset(Dataset):
+            def __getitem__(self, index):
+                return bins[index], exogenous[index]
+
+            def __len__(self) -> int:
+                return data.shape[0]
+
+        return _Dataset(), binning
+
+
+def _dataset_from_genetic_dataset(
+    args: argparse.Namespace,
+    genetic_dataset: PhenotypeGeneticDataset,
+    endogenous_column: str,
+    exogenous_columns: Iterable[str]
+) -> Tuple[Dataset, Binning]:
+    # Create binning.
+    binning = Binning(
+        genetic_dataset.exog[endogenous_column],
+        mode="histogram" if args.histogram else "quantiles",
+        n_bins=args.n_bins
+    )
+
+    class _Dataset(Dataset):
+        def __getitem__(self, index: int):
+            # Get the binned exposure.
+            cur = genetic_dataset[index]
+            y = binning.values_to_bin_indices(cur.endogenous, one_hot=True)
+
+            if hasattr(cur, "exogenous"):
+                x = torch.hstack((cur.dosage, cur.exogenous))
+            else:
+                x = cur.dosage
+
+            return y, x
+
+        def __len__(self):
+            return len(genetic_dataset)
+
+    return _Dataset(), binning
+
+
+def train_exposure_model(
+    args: argparse.Namespace,
+    data: pd.DataFrame,
+    backend: Optional[GeneticDatasetBackend],
+) -> ExposureCategoricalMLP:
+    info("Training exposure model.")
+
+    dataset, binning = get_dataset_and_binning(
+        args,
+        data,
+        backend,
+        endogenous_column=args.exposure,
+        exogenous_columns=args.covariables + args.instrument
+    )
+
+    print(dataset)
+    print(dataset[0])
+
+    model = ExposureCategoricalMLP(
+        binning,
+        input_size=dataset[0][1].shape[1],
+        hidden=[32, 16],
+        lr=args.exposure_learning_rate,
+        weight_decay=args.exposure_weight_decay,
+    )
+
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.exposure_batch_size,
+        shuffle=True
+    )
+
+    trainer = pl.Trainer()
+    trainer.fit(model, dataloader)
+
+    return model
 
 
 def configure_argparse(parser) -> None:
@@ -199,6 +344,24 @@ def configure_argparse(parser) -> None:
     )
 
     parser.add_argument(
+        "--instrument", "-z",
+        nargs="*",
+        default=[],
+        help="The instrument (Z or G) in the case where we're not using "
+             "genotypes provided through --genotypes. Multiple values can "
+             "be provided for multiple instruments.\n"
+             "This should be column(s) in the data file."
+    )
+
+    parser.add_argument(
+        "--covariables",
+        nargs="*",
+        default=[],
+        help="Variables which will be included in both stages."
+             "This should be column(s) in the data file."
+    )
+
+    parser.add_argument(
         "--exposure", "-x",
         help="The exposure (X). This should be a column name in the data "
              "file.",
@@ -219,6 +382,13 @@ def configure_argparse(parser) -> None:
         default="continuous",
         choices=["continuous", "binary"],
         help="Variable type for the outcome (binary vs continuous)."
+    )
+
+    parser.add_argument(
+        "--sample-id-col",
+        default="sample_id",
+        help="Column that contains the sample id. This is mandatory if "
+             "genotypes are provided to enable joining."
     )
 
     parser.add_argument(
