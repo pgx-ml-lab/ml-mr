@@ -1,5 +1,4 @@
 import sys
-import argparse
 from .estimation.cli import (
     main as estimation_main
 )
@@ -14,10 +13,10 @@ def main():
 
     """
 
-    if len(sys.argv) < 3 or ("mode" != sys.argv[1]):
+    if len(sys.argv) < 2:
         return print_usage()
 
-    mode = sys.argv[2]
+    mode = sys.argv[1]
 
     if mode == "estimation":
         return estimation_main()
@@ -32,7 +31,7 @@ def main():
 
 def print_usage():
     print(
-        "usage: ml-mr mode [-h] {estimation,evaluation,simulation}",
+        "usage: ml-mr {estimation,evaluation,simulation} [-h]",
         file=sys.stderr
     )
     sys.exit(1)

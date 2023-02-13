@@ -63,16 +63,21 @@ class MLP(pl.LightningModule):
         # Hyperparameters and training parameters.
         lr: float = 1e-3,
         weight_decay: float = 0,
-        loss: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = F.mse_loss
+        loss: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = F.mse_loss,  # noqa: E501
+        _save_hyperparams: bool = True
     ):
         super().__init__()
-        self.save_hyperparameters()
+        if _save_hyperparams:
+            self.save_hyperparameters()
 
         layers = build_mlp(input_size, hidden, out, add_input_layer_batchnorm,
                            add_hidden_layer_batchnorm, activations)
 
         self.loss = loss
         self.mlp = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.mlp(x)
 
     def _step(
         self,
@@ -82,7 +87,7 @@ class MLP(pl.LightningModule):
     ) -> torch.Tensor:
         x, y = batch
 
-        y_hat = self.mlp(x)
+        y_hat = self.forward(x)
         loss = self.loss(y_hat, y)
 
         self.log(f"{log_prefix}_loss", loss)
@@ -121,7 +126,7 @@ class MLP(pl.LightningModule):
         group.add_argument(
             f"--{prefix}max-epochs",
             type=int,
-            default=100
+            default=1000
         )
 
         group.add_argument(

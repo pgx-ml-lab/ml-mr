@@ -21,7 +21,7 @@ def main():
 
     """
     parser = argparse.ArgumentParser(
-        prog="ml-mr mode estimation"
+        prog="ml-mr estimation"
     )
 
     algorithms = parser.add_subparsers(
@@ -31,7 +31,7 @@ def main():
     bin_iv_parser = algorithms.add_parser("bin_iv")
     bin_iv_configure_argparse(bin_iv_parser)
 
-    args = parser.parse_args(sys.argv[3:])
+    args = parser.parse_args(sys.argv[2:])
     if args.algorithm == "bin_iv":
         bin_iv_main(args)
     else:
