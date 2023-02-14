@@ -24,8 +24,9 @@ from pytorch_genotypes.dataset import (
     PhenotypeGeneticDataset,
     BACKENDS
 )
+from torchmetrics import ConfusionMatrix
 
-from ..utils import MLP, build_mlp, read_data
+from ..utils import MLP, read_data
 from ..logging import info, critical
 
 
@@ -40,7 +41,7 @@ class Binning(object):
         mode: BinningMode = "quantiles",
         n_bins: int = 20
     ):
-        self.x = x
+        self.x = x.to(torch.float32)
         self.n_bins = n_bins
 
         if mode == "histogram":
@@ -105,7 +106,7 @@ class ExposureCategoricalMLP(MLP):
         weight_decay: float = 0,
         add_input_layer_batchnorm: bool = False,
         add_hidden_layer_batchnorm: bool = False,
-        activations: Iterable[nn.Module] = [nn.LeakyReLU()]
+        activations: Iterable[nn.Module] = [nn.GELU()]
     ):
         super().__init__(
             input_size=input_size,
@@ -119,12 +120,14 @@ class ExposureCategoricalMLP(MLP):
             loss=F.cross_entropy
         )
         self.binning = binning
+        print(self)
 
     def _step(self, batch, batch_index, log_prefix):
         x, _, ivs, covars = batch
         x_hat = self.forward(
             torch.hstack([tens for tens in (ivs, covars) if tens is not None])
         )
+
         loss = self.loss(x_hat, x)
 
         self.log(f"exposure_{log_prefix}_loss", loss)
@@ -277,11 +280,54 @@ def main(args: argparse.Namespace) -> None:
     )
 
     exposure_network = ExposureCategoricalMLP\
-        .load_from_checkpoint("exposure_network.ckpt")
+        .load_from_checkpoint("exposure_network.ckpt")\
+        .eval()  # type: ignore
+
+    if not args.no_plot:
+        plot_exposure_model(binning, exposure_network, val_dataset)
 
     train_outcome_model(
-        args, train_dataset, val_dataset, binning, backend, exposure_network
+        args, train_dataset, val_dataset, binning, exposure_network
     )
+
+
+@torch.no_grad()
+def plot_exposure_model(
+    binning: Binning,
+    exposure_network: ExposureCategoricalMLP,
+    val_dataset: Dataset
+):
+    assert hasattr(val_dataset, "__len__")
+    dataloader = DataLoader(val_dataset, batch_size=len(val_dataset))
+    actual_bin, _, z, covariables = next(iter(dataloader))
+
+    input = torch.hstack(
+        [tens for tens in (z, covariables) if tens is not None]
+    )
+    predicted_bin = torch.argmax(
+        F.softmax(exposure_network.forward(input), dim=1),
+        dim=1
+    )
+
+    print(
+        "Exposure model accuracy: ",
+        torch.mean((predicted_bin == actual_bin).to(torch.float32))
+    )
+
+    confusion = ConfusionMatrix(
+        task="multiclass",
+        num_classes=binning.n_bins,
+        normalize="true"
+    )
+    confusion_matrix = confusion(predicted_bin, actual_bin)  # type: ignore
+
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(10, 10))
+    plt.matshow(confusion_matrix)
+    plt.xlabel("Predicted bin")
+    plt.ylabel("True bin")
+    plt.colorbar()
+    plt.savefig("confusion_matrix.png", dpi=400)
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -333,9 +379,7 @@ def get_dataset_and_binning(
         )
 
     else:
-        exposure_tens = torch.from_numpy(data[exposure].values)\
-            .to(torch.float32)
-
+        exposure_tens = torch.from_numpy(data[exposure].values)
         outcome_tens = torch.from_numpy(data[[outcome]].values)\
             .to(torch.float32)
 
@@ -345,7 +389,7 @@ def get_dataset_and_binning(
             n_bins=args.n_bins
         )
 
-        bins = binning.values_to_bin_indices(exposure_tens, one_hot=True)
+        bins = binning.values_to_bin_indices(exposure_tens)
         instruments = torch.from_numpy(data[instruments].values)\
             .to(torch.float32)
         covariables = torch.from_numpy(data[covariables].values)\
@@ -353,7 +397,7 @@ def get_dataset_and_binning(
 
         class _Dataset(Dataset):
             def __getitem__(self, index):
-                exposure = bins[index].to(torch.float32)
+                exposure = bins[index]
                 outcome = outcome_tens[index]
                 z = instruments[index]
                 cur_covars = covariables[index]
@@ -456,9 +500,11 @@ def train_exposure_model(
     model = ExposureCategoricalMLP(
         binning=binning,
         input_size=_n_exog(backend, args),
-        hidden=[32, 16],
+        hidden=args.exposure_hidden,
         lr=args.exposure_learning_rate,
         weight_decay=args.exposure_weight_decay,
+        add_input_layer_batchnorm=True,
+        add_hidden_layer_batchnorm=True
     )
 
     train_dataloader = DataLoader(
@@ -471,6 +517,7 @@ def train_exposure_model(
     val_dataloader = DataLoader(
         val_dataset,
         batch_size=len(val_dataset),  # type: ignore
+        num_workers=4
     )
 
     # Remove checkpoint if exists.
@@ -481,7 +528,9 @@ def train_exposure_model(
         max_epochs=args.exposure_max_epochs,
         accelerator=args.accelerator,
         callbacks=[
-            pl.callbacks.EarlyStopping(monitor="exposure_val_loss"),
+            pl.callbacks.EarlyStopping(
+                monitor="exposure_val_loss", patience=10
+            ),
             pl.callbacks.ModelCheckpoint(
                 filename="exposure_network",
                 dirpath=".",
@@ -498,7 +547,6 @@ def train_outcome_model(
     train_dataset: Dataset,
     val_dataset: Dataset,
     binning: Binning,
-    backend: GeneticDatasetBackend,
     exposure_network: ExposureCategoricalMLP
 ) -> None:
     info("Training outcome model.")
@@ -507,7 +555,7 @@ def train_outcome_model(
         input_size=binning.n_bins + len(args.covariables),
         lr=args.outcome_learning_rate,
         weight_decay=args.outcome_weight_decay,
-        hidden=[16, 8],  # FIXME Parametrize.
+        hidden=args.outcome_hidden
     )
 
     train_dataloader = DataLoader(
@@ -520,6 +568,7 @@ def train_outcome_model(
     val_dataloader = DataLoader(
         val_dataset,
         batch_size=len(val_dataset),  # type: ignore
+        num_workers=4
     )
 
     # Remove checkpoint if exists.
@@ -582,6 +631,12 @@ def configure_argparse(parser) -> None:
             "pytorch genotypes."
         ),
         type=str
+    )
+
+    parser.add_argument(
+        "--no-plot",
+        help="Disable plotting of diagnostics.",
+        action="store_true"
     )
 
     parser.add_argument(
@@ -663,9 +718,11 @@ def configure_argparse(parser) -> None:
     )
 
     MLP.add_argparse_parameters(
-        parser, "exposure-", "Exposure Model Parameters"
+        parser, "exposure-", "Exposure Model Parameters",
+        defaults={"hidden": [128, 64], "batch-size": 5000}
     )
 
     MLP.add_argparse_parameters(
-        parser, "outcome-", "Outcome Model Parameters"
+        parser, "outcome-", "Outcome Model Parameters",
+        defaults={"hidden": [16, 8]}
     )

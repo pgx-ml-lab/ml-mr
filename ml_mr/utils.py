@@ -4,7 +4,7 @@ causal effect estimation or for simulation, for example.
 """
 
 import argparse
-from typing import Optional, Iterable, List, Callable
+from typing import Optional, Iterable, List, Callable, Dict, Any
 
 import pandas as pd
 import pytorch_lightning as pl
@@ -114,7 +114,8 @@ class MLP(pl.LightningModule):
     def add_argparse_parameters(
         parser: argparse.ArgumentParser,
         argument_prefix: Optional[str] = None,
-        group_name: str = "MLP Parameters"
+        group_name: str = "MLP Parameters",
+        defaults: Optional[Dict[str, Any]] = None
     ) -> None:
         if argument_prefix is None:
             prefix = ""
@@ -123,32 +124,42 @@ class MLP(pl.LightningModule):
 
         group = parser.add_argument_group(group_name)
 
+        if defaults is None:
+            defaults = {}
+
+        group.add_argument(
+            f"--{prefix}hidden",
+            nargs="*",
+            default=defaults.get("hidden", []),
+            type=int
+        )
+
         group.add_argument(
             f"--{prefix}max-epochs",
             type=int,
-            default=1000
+            default=defaults.get("max-epochs", 1000)
         )
 
         group.add_argument(
             f"--{prefix}batch-size",
             type=int,
-            default=1024
+            default=defaults.get("batch-size", 1024)
         )
 
         group.add_argument(
             f"--{prefix}optimizer",
             type=str,
-            default="adam"
+            default=defaults.get("optimizer", "adam")
         )
 
         group.add_argument(
             f"--{prefix}learning-rate",
             type=float,
-            default=1e-4
+            default=defaults.get("learning-rate", 1e-4)
         )
 
         group.add_argument(
             f"--{prefix}weight-decay",
             type=float,
-            default=0
+            default=defaults.get("weight-decay", 0)
         )
