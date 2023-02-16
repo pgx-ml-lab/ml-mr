@@ -27,7 +27,7 @@ from pytorch_genotypes.dataset import (
 from torchmetrics import ConfusionMatrix
 
 from .core import MREstimator
-from ..utils import MLP, read_data, ModelWithTemperature
+from ..utils import MLP, read_data, temperature_scale
 from ..logging import info, critical
 
 
@@ -121,7 +121,13 @@ class ExposureCategoricalMLP(MLP):
             loss=F.cross_entropy
         )
         self.binning = binning
-        print(self)
+        self.temperature = nn.Parameter(
+            torch.tensor(1.),
+            requires_grad=False
+        )
+
+    def forward(self, xs):
+        return super().forward(xs) / self.temperature
 
     def _step(self, batch, batch_index, log_prefix):
         x, _, ivs, covars = batch
@@ -349,13 +355,19 @@ def main(args: argparse.Namespace) -> None:
         .eval()  # type: ignore
 
     # Apply temperature scaling to the exposure model to improve calibration.
-    # TODO. Integrate this directly in the exposure network class.
-    # exposure_network = ModelWithTemperature(exposure_network)
-    # exposure_network.set_temperature(
-    #     DataLoader(val_dataset, batch_size=len(val_dataset)),
-    #     input_index=2,  # FIXME will break if covars.
-    #     label_index=0
-    # ).to("cpu")
+    def _batch_fwd(model, batch):
+        _, _, ivs, covars = batch
+        return model.forward(torch.hstack((ivs, covars)))
+
+    temperature_scale(
+        exposure_network,
+        val_dataset,
+        batch_forward=_batch_fwd,
+        batch_target=lambda batch: batch[0]
+    )
+
+    info(f"Temperature scaling parameter after tuning: "
+         f"{exposure_network.temperature.item()}")
 
     if not args.no_plot:
         plot_exposure_model(binning, exposure_network, val_dataset)
@@ -398,10 +410,9 @@ def plot_exposure_model(
         dim=1
     )
 
-    print(
-        "Exposure model accuracy: ",
+    info("Exposure model accuracy: {}".format(
         torch.mean((predicted_bin == actual_bin).to(torch.float32))
-    )
+    ))
 
     confusion = ConfusionMatrix(
         task="multiclass",
@@ -430,9 +441,11 @@ def save_estimator_statistics(estimator: BinIVEstimator):
     plt.scatter(xs.numpy(), ys.numpy())
     plt.xlabel("X")
     plt.ylabel("Y")
-    plt.show()
+    plt.savefig("estimated_causal_effect.png", dpi=600)
     plt.clf()
-    plt.close()
+
+    df = pd.DataFrame({"x": xs, "y_do_x": ys})
+    df.to_csv("causal_estimates.csv.gz", compression="gzip", index=False)
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -630,11 +643,12 @@ def train_exposure_model(
         os.remove("exposure_network.ckpt")
 
     trainer = pl.Trainer(
+        log_every_n_steps=1,
         max_epochs=args.exposure_max_epochs,
         accelerator=args.accelerator,
         callbacks=[
             pl.callbacks.EarlyStopping(
-                monitor="exposure_val_loss", patience=10
+                monitor="exposure_val_loss", patience=20
             ),
             pl.callbacks.ModelCheckpoint(
                 filename="exposure_network",
@@ -681,6 +695,7 @@ def train_outcome_model(
         os.remove("outcome_network.ckpt")
 
     trainer = pl.Trainer(
+        log_every_n_steps=1,
         max_epochs=args.outcome_max_epochs,
         accelerator=args.accelerator,
         callbacks=[
