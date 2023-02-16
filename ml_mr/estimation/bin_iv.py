@@ -26,7 +26,8 @@ from pytorch_genotypes.dataset import (
 )
 from torchmetrics import ConfusionMatrix
 
-from ..utils import MLP, read_data
+from .core import MREstimator
+from ..utils import MLP, read_data, ModelWithTemperature
 from ..logging import info, critical
 
 
@@ -156,7 +157,7 @@ class OutcomeWithBinsMLP(MLP):
             activations=activations,
             lr=lr,
             weight_decay=weight_decay,
-            loss=F.mse_loss,  # FIXME
+            loss=F.mse_loss,
             _save_hyperparams=False
         )
         self.exposure_network = exposure_network
@@ -170,6 +171,14 @@ class OutcomeWithBinsMLP(MLP):
         self.log(f"outcome_{log_prefix}_loss", loss)
 
         return loss
+
+    def x_to_y(self, x_one_hot: torch.Tensor, covars: Optional[torch.Tensor]):
+        if covars is not None:
+            x = torch.hstack((x_one_hot, covars))
+        else:
+            x = x_one_hot
+
+        return self.mlp(x)
 
     def forward(self, ivs, covars):
         # x is the input to the exposure model.
@@ -193,16 +202,72 @@ class OutcomeWithBinsMLP(MLP):
                 self.exposure_network.binning.n_bins
             ).repeat(mb, 1)
 
-            pred = self.mlp(
-                torch.hstack(
-                    [tens for tens in (cur_one_hot, covars)
-                     if tens is not None]
-                )
-            )
+            pred = self.x_to_y(cur_one_hot, covars)
 
             y_hats += weights * pred
 
         return y_hats
+
+
+class BinIVEstimator(MREstimator):
+    def __init__(
+        self,
+        exposure_network: ExposureCategoricalMLP,
+        outcome_network: OutcomeWithBinsMLP,
+        dataset: Optional[Dataset],
+        binning: Binning,
+        max_sample_size: int = 5000
+    ):
+        self.exposure_network = exposure_network
+        self.outcome_network = outcome_network
+        self.dataset = dataset
+        self.binning = binning
+        self.max_sample_size = max_sample_size
+
+    def effect(
+        self,
+        x: torch.Tensor,
+        covars: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Mean exposure to outcome effect at values of x."""
+        # Get the bin for the provided xs.
+        bins = self.binning.values_to_bin_indices(x, one_hot=True)\
+            .to(torch.float32)
+
+        # Take a sample to get covariable values.
+        n = len(self.dataset)  # type: ignore
+        if n > self.max_sample_size:
+            n = self.max_sample_size
+
+        if covars is None:
+            # Try to get covariables from the dataset.
+            if self.dataset is not None:
+                dl = DataLoader(self.dataset, batch_size=n, shuffle=True)
+                covars = next(iter(dl))[3]
+
+                if covars.size(1) == 0:
+                    covars = None
+
+        if covars is None:
+            # No covariables in the dataset or provided as arguments.
+            # This will fail if covariables are necessary to go through the
+            # network. The error won't be nice, so it will be better to catch
+            # that. TODO
+            with torch.no_grad():
+                ys = self.outcome_network.x_to_y(bins, None)
+
+            return ys.reshape(-1)
+
+        else:
+            x_one_hot = torch.repeat_interleave(
+                bins, covars.size(0), dim=0
+            )
+            covars = covars.repeat(bins.size(0), 1)
+            with torch.no_grad():
+                y_hats = self.outcome_network.x_to_y(x_one_hot, covars)
+
+            raise RuntimeError("Fixme, aggregate over right dimension.")
+            return torch.mean(y_hats)
 
 
 def main(args: argparse.Namespace) -> None:
@@ -283,12 +348,36 @@ def main(args: argparse.Namespace) -> None:
         .load_from_checkpoint("exposure_network.ckpt")\
         .eval()  # type: ignore
 
+    # Apply temperature scaling to the exposure model to improve calibration.
+    # TODO. Integrate this directly in the exposure network class.
+    # exposure_network = ModelWithTemperature(exposure_network)
+    # exposure_network.set_temperature(
+    #     DataLoader(val_dataset, batch_size=len(val_dataset)),
+    #     input_index=2,  # FIXME will break if covars.
+    #     label_index=0
+    # ).to("cpu")
+
     if not args.no_plot:
         plot_exposure_model(binning, exposure_network, val_dataset)
 
     train_outcome_model(
         args, train_dataset, val_dataset, binning, exposure_network
     )
+
+    outcome_network = OutcomeWithBinsMLP\
+        .load_from_checkpoint(
+            "outcome_network.ckpt",
+            exposure_network=exposure_network
+        ).eval()  # type: ignore
+
+    estimator = BinIVEstimator(
+        exposure_network,
+        outcome_network,
+        dataset,
+        binning
+    )
+
+    save_estimator_statistics(estimator)
 
 
 @torch.no_grad()
@@ -328,6 +417,22 @@ def plot_exposure_model(
     plt.ylabel("True bin")
     plt.colorbar()
     plt.savefig("confusion_matrix.png", dpi=400)
+    plt.clf()
+    plt.close()
+
+
+def save_estimator_statistics(estimator: BinIVEstimator):
+    # Save the causal effect at every bin midpoint.
+    xs = torch.tensor(list(estimator.binning.get_midpoints()))
+    ys = estimator.effect(xs)
+    import matplotlib.pyplot as plt
+    plt.figure()
+    plt.scatter(xs.numpy(), ys.numpy())
+    plt.xlabel("X")
+    plt.ylabel("Y")
+    plt.show()
+    plt.clf()
+    plt.close()
 
 
 def validate_args(args: argparse.Namespace) -> None:

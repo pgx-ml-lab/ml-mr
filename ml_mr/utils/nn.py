@@ -13,13 +13,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def read_data(
-    filename: str, sep: str, expect_columns: Iterable[str]
-) -> pd.DataFrame:
-    """Read a delimited data file and do minimal QC."""
-    return pd.read_csv(filename, sep=sep, usecols=expect_columns)
-
-
 def build_mlp(
     input_size: int,
     hidden: Iterable[int],
