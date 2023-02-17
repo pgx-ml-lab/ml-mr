@@ -17,6 +17,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 from torch.utils.data import Dataset, DataLoader, random_split
 from pytorch_genotypes.dataset import (
@@ -220,15 +221,11 @@ class BinIVEstimator(MREstimator):
         self,
         exposure_network: ExposureCategoricalMLP,
         outcome_network: OutcomeWithBinsMLP,
-        dataset: Optional[Dataset],
         binning: Binning,
-        max_sample_size: int = 5000
     ):
         self.exposure_network = exposure_network
         self.outcome_network = outcome_network
-        self.dataset = dataset
         self.binning = binning
-        self.max_sample_size = max_sample_size
 
     def effect(
         self,
@@ -239,20 +236,6 @@ class BinIVEstimator(MREstimator):
         # Get the bin for the provided xs.
         bins = self.binning.values_to_bin_indices(x, one_hot=True)\
             .to(torch.float32)
-
-        # Take a sample to get covariable values.
-        n = len(self.dataset)  # type: ignore
-        if n > self.max_sample_size:
-            n = self.max_sample_size
-
-        if covars is None:
-            # Try to get covariables from the dataset.
-            if self.dataset is not None:
-                dl = DataLoader(self.dataset, batch_size=n, shuffle=True)
-                covars = next(iter(dl))[3]
-
-                if covars.size(1) == 0:
-                    covars = None
 
         if covars is None:
             # No covariables in the dataset or provided as arguments.
@@ -277,34 +260,12 @@ class BinIVEstimator(MREstimator):
 
 
 def main(args: argparse.Namespace) -> None:
-    """Command-line interface entry-point.
-
-    We should provide either --genotype or --instrument and a column name from
-    the data file.
-
-    ml-mr estimation --algorithm bin_iv \
-        --n-bins 20 \
-        --output-prefix my_bin_iv \
-        --genotypes-backend my_geno.pkl \
-        --genotypes-backend-type zarr \
-        --data my_pheno.csv \
-        --exposure ldl_c_std \
-        --outcome crp \
-        --outcome-type continuous \
-        --accelerator gpu \
-        --exposure-max-epochs 200 \
-        --exposure-batch-size 2000 \
-        --exposure-optimizer adam \
-        --exposure-learning-rate 9e-4 \
-        --exposure-weight-decay 0 \
-        --outcome-max-epochs 200 \
-        --outcome-batch-size 2000 \
-        --outcome-optimizer adam \
-        --outcome-learning-rate 9e-4 \
-        --outcome-weight-decay 0 \
-
-    """
+    """Command-line interface entry-point."""
     validate_args(args)
+
+    # Create output directory if needed.
+    if not os.path.isdir(args.output_dir):
+        os.makedirs(args.output_dir)
 
     # Read the data.
     expected_cols = [args.exposure, args.outcome]
@@ -340,6 +301,11 @@ def main(args: argparse.Namespace) -> None:
         instruments=args.instruments
     )
 
+    save_covariables(
+        dataset,
+        os.path.join(args.output_dir, "covariables.pt")
+    )
+
     # Split here into train and val.
     train_dataset, val_dataset = random_split(
         dataset,
@@ -351,8 +317,9 @@ def main(args: argparse.Namespace) -> None:
     )
 
     exposure_network = ExposureCategoricalMLP\
-        .load_from_checkpoint("exposure_network.ckpt")\
-        .eval()  # type: ignore
+        .load_from_checkpoint(
+            os.path.join(args.output_dir, "exposure_network.ckpt")
+        ).eval()  # type: ignore
 
     # Apply temperature scaling to the exposure model to improve calibration.
     def _batch_fwd(model, batch):
@@ -370,7 +337,12 @@ def main(args: argparse.Namespace) -> None:
          f"{exposure_network.temperature.item()}")
 
     if not args.no_plot:
-        plot_exposure_model(binning, exposure_network, val_dataset)
+        plot_exposure_model(
+            binning, exposure_network, val_dataset,
+            output_filename=os.path.join(
+                args.output_dir, "exposure_model_confusion_matrix.png"
+            )
+        )
 
     train_outcome_model(
         args, train_dataset, val_dataset, binning, exposure_network
@@ -378,25 +350,28 @@ def main(args: argparse.Namespace) -> None:
 
     outcome_network = OutcomeWithBinsMLP\
         .load_from_checkpoint(
-            "outcome_network.ckpt",
+            os.path.join(args.output_dir, "outcome_network.ckpt"),
             exposure_network=exposure_network
         ).eval()  # type: ignore
 
     estimator = BinIVEstimator(
         exposure_network,
         outcome_network,
-        dataset,
         binning
     )
 
-    save_estimator_statistics(estimator)
+    save_estimator_statistics(
+        estimator,
+        output_prefix=os.path.join(args.output_dir, "causal_estimates")
+    )
 
 
 @torch.no_grad()
 def plot_exposure_model(
     binning: Binning,
     exposure_network: ExposureCategoricalMLP,
-    val_dataset: Dataset
+    val_dataset: Dataset,
+    output_filename: str = "exposure_model_confusion_matrix.png"
 ):
     assert hasattr(val_dataset, "__len__")
     dataloader = DataLoader(val_dataset, batch_size=len(val_dataset))
@@ -421,31 +396,39 @@ def plot_exposure_model(
     )
     confusion_matrix = confusion(predicted_bin, actual_bin)  # type: ignore
 
-    import matplotlib.pyplot as plt
     plt.figure(figsize=(10, 10))
     plt.matshow(confusion_matrix)
     plt.xlabel("Predicted bin")
     plt.ylabel("True bin")
     plt.colorbar()
-    plt.savefig("confusion_matrix.png", dpi=400)
+    plt.savefig(output_filename, dpi=400)
     plt.clf()
     plt.close()
 
 
-def save_estimator_statistics(estimator: BinIVEstimator):
+def save_estimator_statistics(estimator: BinIVEstimator,
+                              output_prefix: str = "causal_estimates"):
     # Save the causal effect at every bin midpoint.
     xs = torch.tensor(list(estimator.binning.get_midpoints()))
     ys = estimator.effect(xs)
-    import matplotlib.pyplot as plt
     plt.figure()
     plt.scatter(xs.numpy(), ys.numpy())
     plt.xlabel("X")
     plt.ylabel("Y")
-    plt.savefig("estimated_causal_effect.png", dpi=600)
+    plt.savefig(f"{output_prefix}.png", dpi=600)
     plt.clf()
 
     df = pd.DataFrame({"x": xs, "y_do_x": ys})
-    df.to_csv("causal_estimates.csv.gz", compression="gzip", index=False)
+    df.to_csv(f"{output_prefix}.csv", index=False)
+
+
+def save_covariables(dataset: Dataset, output_filename: str):
+    dl = DataLoader(dataset, batch_size=len(dataset))  # type: ignore
+    covars = next(iter(dl))[3]
+    if covars.shape[1] == 0:
+        return None
+
+    torch.save(covars, output_filename)
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -639,8 +622,12 @@ def train_exposure_model(
     )
 
     # Remove checkpoint if exists.
-    if os.path.isfile("exposure_network.ckpt"):
-        os.remove("exposure_network.ckpt")
+    full_filename = os.path.join(
+        args.output_dir, "exposure_network.ckpt"
+    )
+    if os.path.isfile(full_filename):
+        info(f"Removing file '{full_filename}'.")
+        os.remove(full_filename)
 
     trainer = pl.Trainer(
         log_every_n_steps=1,
@@ -652,7 +639,7 @@ def train_exposure_model(
             ),
             pl.callbacks.ModelCheckpoint(
                 filename="exposure_network",
-                dirpath=".",
+                dirpath=args.output_dir,
                 save_top_k=1,
                 monitor="exposure_val_loss"
             )
@@ -691,8 +678,10 @@ def train_outcome_model(
     )
 
     # Remove checkpoint if exists.
-    if os.path.isfile("outcome_network.ckpt"):
-        os.remove("outcome_network.ckpt")
+    full_filename = os.path.join(args.output_dir, "outcome_network.ckpt")
+    if os.path.isfile(full_filename):
+        info(f"Removing file '{full_filename}'.")
+        os.remove(full_filename)
 
     trainer = pl.Trainer(
         log_every_n_steps=1,
@@ -702,7 +691,7 @@ def train_outcome_model(
             pl.callbacks.EarlyStopping(monitor="outcome_val_loss"),
             pl.callbacks.ModelCheckpoint(
                 filename="outcome_network",
-                dirpath=".",
+                dirpath=args.output_dir,
                 save_top_k=1,
                 monitor="outcome_val_loss"
             )
@@ -728,7 +717,7 @@ def configure_argparse(parser) -> None:
     )
 
     parser.add_argument(
-        "--output-prefix", default="binning_iv_estimate"
+        "--output-dir", default="binning_iv_estimate"
     )
 
     parser.add_argument(
