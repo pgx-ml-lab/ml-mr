@@ -126,17 +126,17 @@ class Simulation:
         for name, variable in self._sim_variables.items():
             self._data[name] = variable(self)
 
+    def get_parameters_dict(self) -> Dict[str, Any]:
+        return {
+            k: v.tolist() if isinstance(v, np.ndarray) else v
+            for k, v in self._sim_parameters_values.items()
+        }
+
     def save(self, index):
         # Save JSON with sim parameters and pandas dataframe as csv.
         filename = f"{self.prefix}_{index}_simulation_parameters.json"
         with open(filename, "wt") as f:
-            json.dump(
-                {
-                    k: v.tolist() if isinstance(v, np.ndarray) else v
-                    for k, v in self._sim_parameters_values.items()
-                },
-                f
-            )
+            json.dump(self.get_parameters_dict(), f, indent=4)
 
         self._data.to_csv(
             f"{self.prefix}_{index}_simulation_data.csv.gz",
