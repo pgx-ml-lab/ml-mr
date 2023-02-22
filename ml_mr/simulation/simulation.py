@@ -27,13 +27,10 @@ def y(sim):
     x = sim.get_values("x")
     return x @ genetic_effects + np.random.random(sim.n)
 
-
-# Serialization would be nice.
-
 """
 
 from collections import OrderedDict
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Iterable
 
 import json
 import pandas as pd
@@ -77,6 +74,16 @@ class Simulation:
                 raise ValueError(message)
             else:
                 logging.warn(message + " (overwriting).")
+
+    def add_variables(self, variables: Iterable["Variable"]):
+        variables_li = list(variables)
+        for v in variables_li:
+            self._check_var_name(v.name)
+            self._sim_variables[v.name] = v
+
+        mat = np.hstack([v(self).reshape(-1, 1) for v in variables_li])
+        df = pd.DataFrame(mat, columns=[v.name for v in variables_li])
+        self._data = pd.concat((self._data, df), axis=1)
 
     def add_variable(self, *args):
         """Add a variable to the simulation model.
@@ -132,14 +139,17 @@ class Simulation:
             for k, v in self._sim_parameters_values.items()
         }
 
-    def save(self, index):
+    def save(self, index: Optional[int] = None):
         # Save JSON with sim parameters and pandas dataframe as csv.
-        filename = f"{self.prefix}_{index}_simulation_parameters.json"
-        with open(filename, "wt") as f:
+        base = self.prefix
+        if index is not None:
+            base += f"_{index}"
+
+        with open(f"{base}_sim_parameters.json", "wt") as f:
             json.dump(self.get_parameters_dict(), f, indent=4)
 
         self._data.to_csv(
-            f"{self.prefix}_{index}_simulation_data.csv.gz",
+            f"{base}_sim_data.csv.gz",
             compression="gzip",
             index=False
         )

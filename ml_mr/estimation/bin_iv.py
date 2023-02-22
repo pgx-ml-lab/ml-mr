@@ -161,7 +161,9 @@ class ExposureCategoricalMLP(MLP):
     def _step(self, batch, batch_index, log_prefix):
         x, _, ivs, covars = batch
         x_hat = self.forward(
-            torch.hstack([tens for tens in (ivs, covars) if tens is not None])
+            torch.hstack(
+                [tens for tens in (ivs, covars) if tens.numel() > 0]
+            )
         )
 
         loss = self.loss(x_hat, x)
@@ -282,6 +284,26 @@ class BinIVEstimator(MREstimator):
             raise RuntimeError("Fixme, aggregate over right dimension.")
             return torch.mean(y_hats)
 
+    @classmethod
+    def from_results(cls, directory_name: str) -> "BinIVEstimator":
+        """Load a BinIV estimator instance from the directory containing the
+        generated results.
+
+        """
+        with open(os.path.join(directory_name, "binning.pkl"), "rb") as f:
+            binning = pickle.load(f)
+
+        exposure_network = ExposureCategoricalMLP.load_from_checkpoint(
+            os.path.join(directory_name, "exposure_network.ckpt")
+        )
+
+        outcome_network = OutcomeWithBinsMLP.load_from_checkpoint(
+            os.path.join(directory_name, "outcome_network.ckpt"),
+            exposure_network=exposure_network,
+        )
+
+        return cls(exposure_network, outcome_network, binning)
+
 
 def main(args: argparse.Namespace) -> None:
     """Command-line interface entry-point."""
@@ -323,7 +345,7 @@ def main(args: argparse.Namespace) -> None:
     # Automatically add the model hyperparameters.
     kwargs = {k: v for k, v in vars(args).items() if k in DEFAULTS.keys()}
 
-    return fit_bin_iv(
+    fit_bin_iv(
         dataset=dataset,
         binning=binning,
         backend=backend,
@@ -335,9 +357,9 @@ def main(args: argparse.Namespace) -> None:
 def fit_bin_iv(
     dataset: Dataset,
     binning: Binning,
-    backend: Optional[GeneticDatasetBackend],
+    backend: Optional[GeneticDatasetBackend] = None,
     output_dir: str = DEFAULTS["output_dir"],  # type: ignore
-    validation_proportion: float = DEFAULTS["output_dir"],  # type: ignore
+    validation_proportion: float = DEFAULTS["validation_proportion"],  # type: ignore # noqa: E501
     no_plot: bool = False,
     exposure_hidden: List[int] = DEFAULTS["exposure_hidden"],  # type: ignore
     exposure_learning_rate: float = DEFAULTS["exposure_learning_rate"],  # type: ignore # noqa: E501
@@ -350,7 +372,7 @@ def fit_bin_iv(
     outcome_batch_size: int = DEFAULTS["outcome_batch_size"],  # type: ignore
     outcome_max_epochs: int = DEFAULTS["outcome_max_epochs"],  # type: ignore
     accelerator: str = DEFAULTS["accelerator"],  # type: ignore
-) -> None:
+) -> BinIVEstimator:
     # Create output directory if needed.
     if not os.path.isdir(output_dir):
         os.makedirs(output_dir)
@@ -444,25 +466,7 @@ def fit_bin_iv(
         output_prefix=os.path.join(output_dir, "causal_estimates"),
     )
 
-
-def load_bin_iv_estimator(directory_name: str) -> BinIVEstimator:
-    """Load a BinIV estimator instance from the directory containing the
-    generated results.
-
-    """
-    with open(os.path.join(directory_name, "binning.pkl"), "rb") as f:
-        binning = pickle.load(f)
-
-    exposure_network = ExposureCategoricalMLP.load_from_checkpoint(
-        os.path.join(directory_name, "exposure_network.ckpt")
-    )
-
-    outcome_network = OutcomeWithBinsMLP.load_from_checkpoint(
-        os.path.join(directory_name, "outcome_network.ckpt"),
-        exposure_network=exposure_network,
-    )
-
-    return BinIVEstimator(exposure_network, outcome_network, binning)
+    return estimator
 
 
 @torch.no_grad()
@@ -787,7 +791,9 @@ def train_outcome_model(
         max_epochs=max_epochs,
         accelerator=accelerator,
         callbacks=[
-            pl.callbacks.EarlyStopping(monitor="outcome_val_loss"),
+            pl.callbacks.EarlyStopping(
+                monitor="outcome_val_loss", patience=20
+            ),
             pl.callbacks.ModelCheckpoint(
                 filename="outcome_network",
                 dirpath=output_dir,
@@ -938,3 +944,8 @@ def configure_argparse(parser) -> None:
             "batch-size": DEFAULTS["outcome_batch_size"],
         },
     )
+
+
+# Standard names for estimators.
+create_estimator = fit_bin_iv
+load_estimator = BinIVEstimator.from_results
