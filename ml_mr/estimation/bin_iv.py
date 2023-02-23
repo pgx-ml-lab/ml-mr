@@ -95,15 +95,6 @@ class Binning(object):
         )
         return torch.cat((min, quantiles, max))
 
-    def get_sampling_weights(self, x: torch.Tensor) -> torch.Tensor:
-        """For hist, returns sampling weights to address class imbalance."""
-        if self._hist is None:
-            raise ValueError("Can only generate sample weights for histogram.")
-
-        bins = self.values_to_bin_indices(x)
-        mass = self._hist.hist / self._hist.hist.size(0)
-        return 1.0 / mass[bins]
-
     def get_midpoints(self) -> Iterator[float]:
         for left, right in zip(self.bin_edges, self.bin_edges[1:]):
             yield (left + right) / 2
@@ -276,13 +267,17 @@ class BinIVEstimator(MREstimator):
             return ys.reshape(-1)
 
         else:
-            x_one_hot = torch.repeat_interleave(bins, covars.size(0), dim=0)
+            n_cov_rows = covars.size(0)
+
+            x_one_hot = torch.repeat_interleave(bins, n_cov_rows, dim=0)
             covars = covars.repeat(bins.size(0), 1)
             with torch.no_grad():
                 y_hats = self.outcome_network.x_to_y(x_one_hot, covars)
 
-            raise RuntimeError("Fixme, aggregate over right dimension.")
-            return torch.mean(y_hats)
+            means = torch.tensor(
+                [tens.mean() for tens in torch.split(y_hats, n_cov_rows)]
+            )
+            return means
 
     @classmethod
     def from_results(cls, directory_name: str) -> "BinIVEstimator":

@@ -6,7 +6,6 @@ causal effect estimation or for simulation, for example.
 import argparse
 from typing import Optional, Iterable, List, Callable, Dict, Any
 
-import pandas as pd
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
