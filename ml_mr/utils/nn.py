@@ -103,7 +103,7 @@ class MLP(pl.LightningModule):
         )
 
     @staticmethod
-    def add_argparse_parameters(
+    def add_mlp_arguments(
         parser: argparse.ArgumentParser,
         argument_prefix: Optional[str] = None,
         group_name: str = "MLP Parameters",

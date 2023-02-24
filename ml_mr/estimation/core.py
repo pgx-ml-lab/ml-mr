@@ -1,6 +1,16 @@
-from typing import Optional, Literal, Callable, TypeVar
+from typing import Optional, Literal, Callable, TypeVar, Iterable, Tuple, List
+import argparse
+import itertools
+
+import pandas as pd
 import torch
+from torch.utils.data import Dataset
 from scipy.interpolate import interp1d
+from pytorch_genotypes.dataset import (
+    BACKENDS,
+    PhenotypeGeneticDataset,
+    GeneticDatasetBackend
+)
 
 
 INTERPOLATION = ["linear", "quadratic", "cubic"]
@@ -9,6 +19,12 @@ InterpolationCallable = Callable[[torch.Tensor], torch.Tensor]
 
 
 MREstimatorType = TypeVar("MREstimatorType", bound="MREstimator")
+IVDatasetBatch = Tuple[
+    torch.Tensor,  # exposure
+    torch.Tensor,  # outcome
+    torch.Tensor,  # IVs
+    torch.Tensor   # Covariables
+]
 
 
 class MREstimator(object):
@@ -55,3 +71,254 @@ class MREstimator(object):
 
         """
         raise NotImplementedError()
+
+
+class _IVDataset(Dataset):
+    """Dataset class for IV analysis.
+
+    The batches contain exposure, outcome, IVs and covariables.
+
+    """
+    def __init__(
+        self,
+        exposure: torch.Tensor,
+        outcome: torch.Tensor,
+        ivs: torch.Tensor,
+        covariables: torch.Tensor = torch.Tensor()
+    ):
+        self.exposure = exposure.reshape(-1, 1)
+        self.outcome = outcome.reshape(-1, 1)
+        self.ivs = ivs
+        self.covariables = covariables
+
+        assert (
+            self.exposure.size(0) == self.outcome.size(0) == self.ivs.size(0)
+        ), (
+            f"exposure={self.exposure.shape}, outcome={self.outcome.shape},"
+            f"ivs={self.ivs.shape}"
+        )
+
+    def __getitem__(self, index: int) -> IVDatasetBatch:
+        exposure = self.exposure[index]
+        outcome = self.outcome[index]
+        ivs = self.ivs[index]
+        covars = self.covariables[index]
+
+        return exposure, outcome, ivs, covars
+
+    def __len__(self) -> int:
+        return self.ivs.size(0)
+
+    @staticmethod
+    def from_dataframe(
+        dataframe: pd.DataFrame,
+        exposure_col: str,
+        outcome_col: str,
+        iv_cols: Iterable[str],
+        covariable_cols: Iterable[str] = []
+    ) -> "_IVDataset":
+        exposure = torch.from_numpy(dataframe[exposure_col].values).float()
+        outcome = torch.from_numpy(dataframe[outcome_col].values).float()
+        ivs = torch.from_numpy(dataframe[iv_cols].values).float()
+        covars = torch.from_numpy(dataframe[covariable_cols].values).float()
+
+        return _IVDataset(exposure, outcome, ivs, covars)
+
+    @staticmethod
+    def from_argparse_namespace(args: argparse.Namespace) -> "_IVDataset":
+        data = pd.read_csv(
+            args.data, sep=args.sep
+        )
+        return _IVDataset.from_dataframe(
+            data,
+            exposure_col=args.exposure,
+            outcome_col=args.outcome,
+            iv_cols=args.instruments,
+            covariable_cols=args.covariables
+        )
+
+    @classmethod
+    def add_dataset_arguments(cls, parser: argparse.ArgumentParser):
+        """Adds commonly used arguments to load a dataset to an argument
+        parser.
+
+        """
+        parser.add_argument(
+            "--data", "-d", required=True, help="Path to a data file."
+        )
+
+        parser.add_argument(
+            "--sep",
+            default="\t",
+            help="Separator (column delimiter) for the data file.",
+        )
+
+        parser.add_argument(
+            "--instruments",
+            "-z",
+            nargs="*",
+            default=[],
+            help="The instrument (Z or G) in the case where we're not using "
+            "genotypes provided through --genotypes. Multiple values can "
+            "be provided for multiple instruments.\n"
+            "This should be column(s) in the data file.",
+        )
+
+        parser.add_argument(
+            "--covariables",
+            nargs="*",
+            default=[],
+            help="Variables which will be included in both stages."
+            "This should be column(s) in the data file.",
+        )
+
+        parser.add_argument(
+            "--exposure",
+            "-x",
+            help="The exposure (X). This should be a column name in the data "
+            "file.",
+            required=True,
+            type=str,
+        )
+
+        parser.add_argument(
+            "--outcome",
+            "-y",
+            help="The outcome (Y). This should be a column name in the data "
+            "file.",
+            required=True,
+            type=str,
+        )
+
+
+class IVDatasetWithGenotypes(_IVDataset):
+    def __init__(
+        self,
+        genetic_dataset: PhenotypeGeneticDataset,
+        exposure_col: str,
+        outcome_col: str,
+        iv_cols: Iterable[str],
+        covariable_cols: Iterable[str]
+    ):
+        """Dataset that also includes genotypes read using pytorch genotypes.
+
+        TODO: This is not tested yet.
+
+        """
+        self.genetic_dataset = genetic_dataset
+
+        instruments_set = set(iv_cols)
+        covariables_set = set(covariable_cols)
+
+        iv_indices: List[int] = []
+        covariable_indices: List[int] = []
+        self.exposure_index = None
+        self.outcome_index = None
+        for idx, col in enumerate(genetic_dataset.exogenous_columns):
+            if col in instruments_set:
+                iv_indices.append(idx)
+            elif col in covariables_set:
+                covariable_indices.append(idx)
+            elif col == exposure_col:
+                assert self.exposure_index is None
+                self.exposure_index = idx
+            elif col == outcome_col:
+                assert self.outcome_index is None
+                self.outcome_index = idx
+
+        self.iv_idx_tens = torch.tensor(iv_indices)
+        self.covariable_idx_tens = torch.tensor(covariable_indices)
+
+    def __getitem__(self, index: int) -> IVDatasetBatch:
+        cur = self.genetic_dataset[index]
+        exposure = cur.exogenous[:, [self.exposure_index]]
+        outcome = cur.exogenous[:, [self.outcome_index]]
+
+        instruments = cur.dosage
+        covars = torch.Tensor()
+
+        if self.covariable_idx_tens.numel() > 0:
+            covars = cur.exogenou[:, self.covariable_idx_tens]
+
+        if self.iv_idx_tens.numel() > 0:
+            instruments = torch.hstack(
+                (instruments, cur.exogenous[:, self.iv_idx_tens])
+            )
+
+        return exposure, outcome, instruments, covars
+
+    def __len__(self) -> int:
+        return len(self.genetic_dataset)
+
+    @property
+    def exposure(self):
+        return self.genetic_dataset.exog[:, [self.exposure_index]]
+
+    @staticmethod
+    def from_argparse_namespace(args: argparse.Namespace) -> _IVDataset:
+        # Defer to parent if no genetic data provided.
+        if args.genotypes_backend is None:
+            return _IVDataset.from_argparse_namespace(args)
+
+        # Read genotype data.
+        backend_class = BACKENDS.get(
+            args.genotypes_backend_type, GeneticDatasetBackend
+        )
+
+        backend = backend_class.load(args.genotypes_backend)
+
+        # Read phenotype data.
+        data = pd.read_csv(
+            args.data, sep=args.sep
+        )
+
+        dataset = PhenotypeGeneticDataset(
+            backend,
+            data,
+            phenotypes_sample_id_column=args.sample_id_col,
+            exogenous_columns=itertools.chain(
+                args.instruments, args.covariables,
+                [args.exposure, args.outcome]
+            ),
+        )
+
+        return IVDatasetWithGenotypes(
+            genetic_dataset=dataset,
+            exposure_col=args.exposure,
+            outcome_col=args.outcome,
+            iv_cols=args.instruments,
+            covariable_cols=args.covariables
+        )
+
+    @classmethod
+    def add_dataset_arguments(cls, parser: argparse.ArgumentParser):
+        super().add_dataset_arguments(parser)
+
+        parser.add_argument(
+            "--genotypes-backend",
+            help=(
+                "Pickle containing a pytorch-genotypes backend. This can be "
+                "created from various genetic data formats using the "
+                "'pt-geno-create-backend' command line utility provided by "
+                "pytorch genotypes."
+            ),
+            type=str,
+        )
+
+        parser.add_argument(
+            "--genotypes-backend-type",
+            help=(
+                "Pickle containing a pytorch-genotypes backend. This can be "
+                "created from various genetic data formats using the "
+                "'pt-geno-create-backend' command line utility provided by "
+                "pytorch genotypes."
+            ),
+            type=str,
+        )
+
+        parser.add_argument(
+            "--sample-id-col",
+            default="sample_id",
+            help="Column that contains the sample id. This is mandatory if "
+            "genotypes are provided to enable joining.",
+        )

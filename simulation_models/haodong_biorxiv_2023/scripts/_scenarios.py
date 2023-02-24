@@ -1,3 +1,5 @@
+import torch
+
 import ml_mr.simulation as mr_sim
 
 
@@ -52,7 +54,12 @@ def scenario_d(sim: mr_sim.Simulation):
 # Scenario 1: No causal effect of the exposure.
 @mr_sim.variable
 def scenario_1(sim: mr_sim.Simulation):
+    sim.parameters["true_effect"] = 0
     return sim.get_variable_data("U") + sim.get_variable_data("e_y")
+
+
+def scenario_1_f(x: torch.Tensor) -> torch.Tensor:
+    return torch.zeros_like(x)
 
 
 # Scenario 2: U-shaped causal effect of the exposure on the outcome.
@@ -61,6 +68,10 @@ def scenario_2(sim: mr_sim.Simulation):
     X = sim.get_variable_data("X")
     U = sim.get_variable_data("U")
     return 0.1 * X ** 2 + U + sim.get_variable_data("e_y")
+
+
+def scenario_2_f(x: torch.Tensor) -> torch.Tensor:
+    return 0.1 * x ** 2
 
 
 # Scenario 3: Threshold causal effect of the exposure on the outcome.
@@ -77,6 +88,13 @@ def scenario_3(sim: mr_sim.Simulation):
     return y
 
 
+def scenario_3_f(x: torch.Tensor) -> torch.Tensor:
+    indicator = x > 0
+    y = torch.zeros_like(x)
+    y[indicator] = -0.1 * x ** 2
+    return y
+
+
 INSTRUMENT_EXPOSURE_SCENARIOS = {
     "A": scenario_a,
     "B": scenario_b,
@@ -89,4 +107,11 @@ EXPOSURE_OUTCOME_SCENARIOS = {
     1: scenario_1,
     2: scenario_2,
     3: scenario_3,
+}
+
+
+TRUE_CAUSAL_FUNCTIONS = {
+    1: scenario_1_f,
+    2: scenario_2_f,
+    3: scenario_3_f
 }

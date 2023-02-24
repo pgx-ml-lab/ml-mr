@@ -9,11 +9,10 @@ or a histogram.
 
 
 import argparse
-import itertools
 import os
 import pickle
 import sys
-from typing import Iterable, Iterator, List, Literal, Optional, Tuple
+from typing import Iterable, Iterator, List, Literal, Optional
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -21,17 +20,12 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from pytorch_genotypes.dataset import (
-    BACKENDS,
-    GeneticDatasetBackend,
-    PhenotypeGeneticDataset,
-)
 from torch.utils.data import DataLoader, Dataset, random_split
 from torchmetrics import ConfusionMatrix
 
 from ..logging import critical, info
-from ..utils import MLP, read_data, temperature_scale
-from .core import MREstimator
+from ..utils import MLP, temperature_scale
+from .core import MREstimator, IVDatasetWithGenotypes, _IVDataset
 
 
 # Types and literal definitions.
@@ -300,42 +294,44 @@ class BinIVEstimator(MREstimator):
         return cls(exposure_network, outcome_network, binning)
 
 
+class BinIVDataset(_IVDataset):
+    def __init__(self, dataset: _IVDataset, binning: Binning):
+        """Wraps an IVDataset to provide binned exposure."""
+        self.dataset = dataset
+        self.binning = binning
+
+        self.binned_exposure = binning\
+            .values_to_bin_indices(dataset.exposure)\
+            .flatten()
+
+    def __getitem__(self, index):
+        _, y, iv, covars = self.dataset[index]
+        x_bin = self.binned_exposure[index]
+
+        return x_bin, y, iv, covars
+
+    def __len__(self):
+        return len(self.dataset)
+
+
 def main(args: argparse.Namespace) -> None:
     """Command-line interface entry-point."""
     validate_args(args)
-
-    # Read the data.
-    expected_cols = [args.exposure, args.outcome]
-    expected_cols += args.instruments
-    expected_cols += args.covariables
-
-    data = read_data(args.data, args.sep, expected_cols)
-
-    # Read genetic data if needed.
-    if args.genotypes_backend is not None:
-        backend_class = BACKENDS.get(
-            args.genotypes_backend_type, GeneticDatasetBackend
-        )
-        backend: Optional[GeneticDatasetBackend] = backend_class.load(
-            args.genotypes_backend
-        )
-
-    else:
-        backend = None
 
     # Prepare train and validation datasets.
     # There is theoretically a little bit of leakage here because the histogram
     # or quantiles will be calculated including the validation dataset.
     # This should not have a big impact...
-    dataset, binning = get_dataset_and_binning(
-        args,
-        data,
-        backend,
-        exposure=args.exposure,
-        outcome=args.outcome,
-        covariables=args.covariables,
-        instruments=args.instruments,
+    dataset_base = IVDatasetWithGenotypes.from_argparse_namespace(args)
+
+    # Create binning and bin aware dataset.
+    binning = Binning(
+        dataset_base.exposure,
+        mode="histogram" if args.histogram else "quantiles",
+        n_bins=args.n_bins,
     )
+
+    dataset = BinIVDataset(dataset_base, binning)
 
     # Automatically add the model hyperparameters.
     kwargs = {k: v for k, v in vars(args).items() if k in DEFAULTS.keys()}
@@ -343,16 +339,14 @@ def main(args: argparse.Namespace) -> None:
     fit_bin_iv(
         dataset=dataset,
         binning=binning,
-        backend=backend,
         no_plot=args.no_plot,
         **kwargs,
     )
 
 
 def fit_bin_iv(
-    dataset: Dataset,
+    dataset: BinIVDataset,
     binning: Binning,
-    backend: Optional[GeneticDatasetBackend] = None,
     output_dir: str = DEFAULTS["output_dir"],  # type: ignore
     validation_proportion: float = DEFAULTS["validation_proportion"],  # type: ignore # noqa: E501
     no_plot: bool = False,
@@ -392,7 +386,6 @@ def fit_bin_iv(
         train_dataset=train_dataset,
         val_dataset=val_dataset,
         binning=binning,
-        backend=backend,
         input_size=n_exog,
         output_dir=output_dir,
         hidden=exposure_hidden,
@@ -554,137 +547,15 @@ def validate_args(args: argparse.Namespace) -> None:
         critical("--validation-proportion should be between 0 and 1.")
         sys.exit(1)
 
-
-def get_dataset_and_binning(
-    args: argparse.Namespace,
-    data: pd.DataFrame,
-    backend: Optional[GeneticDatasetBackend],
-    exposure: str,
-    outcome: str,
-    covariables: Iterable[str],
-    instruments: Iterable[str],
-) -> Tuple[Dataset, Binning]:
-    # If we have a backend, we need to add the genotypes to the exogenous
-    # variable.
-    if backend is not None:
-        genetic_dataset = PhenotypeGeneticDataset(
-            backend,
-            data,
-            args.sample_id_col,
-            # We access columns manually later, so for now we ask for
-            # everything we need through the exogenous columns.
-            exogenous_columns=itertools.chain(
-                instruments, covariables, [exposure, outcome]
-            ),
-        )
-        return _dataset_from_genetic_dataset(
-            args, genetic_dataset, exposure, outcome, covariables, instruments
-        )
-
-    else:
-        exposure_tens = torch.from_numpy(data[exposure].values)
-        outcome_tens = torch.from_numpy(data[[outcome]].values).to(
-            torch.float32
-        )
-
-        binning = Binning(
-            exposure_tens,
-            mode="histogram" if args.histogram else "quantiles",
-            n_bins=args.n_bins,
-        )
-
-        bins = binning.values_to_bin_indices(exposure_tens)
-        instruments = torch.from_numpy(data[instruments].values).to(
-            torch.float32
-        )
-        covariables = torch.from_numpy(data[covariables].values).to(
-            torch.float32
-        )
-
-        class _Dataset(Dataset):
-            def __getitem__(self, index):
-                exposure = bins[index]
-                outcome = outcome_tens[index]
-                z = instruments[index]
-                cur_covars = covariables[index]
-                return exposure, outcome, z, cur_covars
-
-            def __len__(self) -> int:
-                return data.shape[0]
-
-        return _Dataset(), binning
-
-
-def _dataset_from_genetic_dataset(
-    args: argparse.Namespace,
-    genetic_dataset: PhenotypeGeneticDataset,
-    exposure: str,
-    outcome: str,
-    covariables: Iterable[str],
-    instruments: Iterable[str],
-) -> Tuple[Dataset, Binning]:
-    # Create binning.
-    binning = Binning(
-        genetic_dataset.exog[exposure],
-        mode="histogram" if args.histogram else "quantiles",
-        n_bins=args.n_bins,
-    )
-
-    instruments_set = set(instruments)
-    covariables_set = set(covariables)
-
-    instrument_idx = []
-    covariable_idx = []
-    exposure_idx = None
-    outcome_idx = None
-    for idx, col in enumerate(genetic_dataset.exogenous_columns):
-        if col in instruments_set:
-            instrument_idx.append(idx)
-        if col in covariables_set:
-            covariable_idx.append(idx)
-        if col == exposure:
-            assert exposure_idx is None
-            exposure_idx = idx
-        if col == outcome:
-            assert outcome_idx is None
-            outcome_idx = idx
-
-    instrument_idx_tens = torch.tensor(instrument_idx)
-    covariable_idx_tens = torch.tensor(covariable_idx)
-
-    class _Dataset(Dataset):
-        def __getitem__(self, index: int):
-            # Get the binned exposure.
-            cur = genetic_dataset[index]
-            bin_exposure = binning.values_to_bin_indices(
-                cur.exogenous[:, exposure_idx], one_hot=True
-            )
-
-            outcome = cur.exogenous[:, [outcome_idx]]
-            instruments = cur.dosage
-            covars = None
-
-            if covariable_idx:
-                covars = cur.exogenous[:, covariable_idx_tens]
-
-            if instrument_idx:
-                instruments = torch.hstack(
-                    (instruments, cur.exogenous[:, instrument_idx_tens])
-                )
-
-            return bin_exposure, outcome, instruments, covars
-
-        def __len__(self):
-            return len(genetic_dataset)
-
-    return _Dataset(), binning
+    if args.genotypes_backend is None and len(args.instruments) == 0:
+        critical("No instruments provided.")
+        sys.exit(1)
 
 
 def train_exposure_model(
     train_dataset: Dataset,
     val_dataset: Dataset,
     binning: Binning,
-    backend: Optional[GeneticDatasetBackend],
     input_size: int,
     output_dir: str,
     hidden: List[int],
@@ -819,78 +690,9 @@ def configure_argparse(parser) -> None:
     parser.add_argument("--output-dir", default=DEFAULTS["output_dir"])
 
     parser.add_argument(
-        "--genotypes-backend",
-        help=(
-            "Pickle containing a pytorch-genotypes backend. This can be "
-            "created from various genetic data formats using the "
-            "'pt-geno-create-backend' command line utility provided by "
-            "pytorch genotypes."
-        ),
-        type=str,
-    )
-
-    parser.add_argument(
-        "--genotypes-backend-type",
-        help=(
-            "Pickle containing a pytorch-genotypes backend. This can be "
-            "created from various genetic data formats using the "
-            "'pt-geno-create-backend' command line utility provided by "
-            "pytorch genotypes."
-        ),
-        type=str,
-    )
-
-    parser.add_argument(
         "--no-plot",
         help="Disable plotting of diagnostics.",
         action="store_true",
-    )
-
-    parser.add_argument(
-        "--data", "-d", required=True, help="Path to a data file."
-    )
-
-    parser.add_argument(
-        "--sep",
-        default="\t",
-        help="Separator (column delimiter) for the data file.",
-    )
-
-    parser.add_argument(
-        "--instruments",
-        "-z",
-        nargs="*",
-        default=[],
-        help="The instrument (Z or G) in the case where we're not using "
-        "genotypes provided through --genotypes. Multiple values can "
-        "be provided for multiple instruments.\n"
-        "This should be column(s) in the data file.",
-    )
-
-    parser.add_argument(
-        "--covariables",
-        nargs="*",
-        default=[],
-        help="Variables which will be included in both stages."
-        "This should be column(s) in the data file.",
-    )
-
-    parser.add_argument(
-        "--exposure",
-        "-x",
-        help="The exposure (X). This should be a column name in the data "
-        "file.",
-        required=True,
-        type=str,
-    )
-
-    parser.add_argument(
-        "--outcome",
-        "-y",
-        help="The outcome (Y). This should be a column name in the data "
-        "file.",
-        required=True,
-        type=str,
     )
 
     parser.add_argument(
@@ -898,13 +700,6 @@ def configure_argparse(parser) -> None:
         default="continuous",
         choices=["continuous", "binary"],
         help="Variable type for the outcome (binary vs continuous).",
-    )
-
-    parser.add_argument(
-        "--sample-id-col",
-        default="sample_id",
-        help="Column that contains the sample id. This is mandatory if "
-        "genotypes are provided to enable joining.",
     )
 
     parser.add_argument(
@@ -920,7 +715,7 @@ def configure_argparse(parser) -> None:
         "will be passed to Pytorch Lightning.",
     )
 
-    MLP.add_argparse_parameters(
+    MLP.add_mlp_arguments(
         parser,
         "exposure-",
         "Exposure Model Parameters",
@@ -930,7 +725,7 @@ def configure_argparse(parser) -> None:
         },
     )
 
-    MLP.add_argparse_parameters(
+    MLP.add_mlp_arguments(
         parser,
         "outcome-",
         "Outcome Model Parameters",
@@ -939,6 +734,8 @@ def configure_argparse(parser) -> None:
             "batch-size": DEFAULTS["outcome_batch_size"],
         },
     )
+
+    IVDatasetWithGenotypes.add_dataset_arguments(parser)
 
 
 # Standard names for estimators.
