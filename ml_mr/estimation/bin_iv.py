@@ -23,9 +23,10 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, random_split
 from torchmetrics import ConfusionMatrix
 
-from ..logging import critical, info
+from ..logging import critical, info, warn
 from ..utils import MLP, temperature_scale
 from .core import MREstimator, IVDatasetWithGenotypes, _IVDataset
+from ..utils.quantiles import quantile_loss
 
 
 # Types and literal definitions.
@@ -161,17 +162,18 @@ class ExposureCategoricalMLP(MLP):
 class OutcomeWithBinsMLP(MLP):
     def __init__(
         self,
-        exposure_network: pl.LightningModule,
+        exposure_network: ExposureCategoricalMLP,
         input_size: int,
         hidden: Iterable[int],
         lr: float,
         weight_decay: float = 0,
+        sqr: bool = False,
         add_input_layer_batchnorm: bool = False,
         add_hidden_layer_batchnorm: bool = False,
         activations: Iterable[nn.Module] = [nn.LeakyReLU()],
     ):
         super().__init__(
-            input_size=input_size,
+            input_size=input_size if not sqr else input_size + 1,
             hidden=hidden,
             out=1,
             add_input_layer_batchnorm=add_input_layer_batchnorm,
@@ -179,7 +181,7 @@ class OutcomeWithBinsMLP(MLP):
             activations=activations,
             lr=lr,
             weight_decay=weight_decay,
-            loss=F.mse_loss,
+            loss=F.mse_loss if not sqr else quantile_loss,  # type: ignore
             _save_hyperparams=False,
         )
         self.exposure_network = exposure_network
@@ -187,24 +189,65 @@ class OutcomeWithBinsMLP(MLP):
 
     def _step(self, batch, batch_index, log_prefix):
         _, y, ivs, covars = batch
-        y_hat = self.forward(ivs, covars)
-        loss = self.loss(y_hat, y)
+
+        if self.hparams.sqr:
+            taus = torch.rand(ivs.size(0), 1, device=self.device)
+        else:
+            taus = None
+
+        y_hat = self.forward(ivs, covars, taus)
+
+        if self.hparams.sqr:
+            loss = self.loss(y_hat, y, taus)
+        else:
+            loss = self.loss(y_hat, y)
 
         self.log(f"outcome_{log_prefix}_loss", loss)
 
         return loss
 
-    def x_to_y(self, x_one_hot: torch.Tensor, covars: Optional[torch.Tensor]):
-        if covars is not None:
-            x = torch.hstack((x_one_hot, covars))
-        else:
-            x = x_one_hot
+    def x_to_y(
+        self,
+        x_one_hot: torch.Tensor,
+        covars: Optional[torch.Tensor],
+        taus: Optional[torch.Tensor] = None
+    ):
+        """Exposure (one hot) to predicted outcome.
+
+        Optionally at a provided quantile tau and specified covariate levels.
+
+        """
+        if taus is not None and not self.hparams.sqr:  # type: ignore
+            raise ValueError("Can't provide tau if SQR not enabled.")
+
+        stack = [x_one_hot]
+
+        if covars is not None and covars.numel() > 0:
+            stack.append(covars)
+
+        if taus is None and self.hparams.sqr:  # type: ignore
+            # Predict median by default.
+            taus = torch.empty(x_one_hot.size(0)).fill_(0.5)
+
+        if taus is not None:
+            stack.append(taus)
+
+        x = torch.hstack(stack)
 
         return self.mlp(x)
 
-    def forward(self, ivs, covars):
+    def forward(  # type: ignore
+        self,
+        ivs: torch.Tensor,
+        covars: Optional[torch.Tensor],
+        taus: Optional[torch.Tensor] = None
+    ):
+        """Forward pass throught the exposure and outcome models."""
+        if self.hparams.sqr:
+            assert taus is not None, "Need quantile samples if SQR enabled."
+
         # x is the input to the exposure model.
-        mb = ivs.shape[0]
+        mb = ivs.size(0)
         exposure_net_xs = torch.hstack(
             [tens for tens in (ivs, covars) if tens is not None]
         )
@@ -214,16 +257,16 @@ class OutcomeWithBinsMLP(MLP):
                 self.exposure_network.forward(exposure_net_xs), dim=1
             )
 
-        y_hats = torch.zeros(mb, 1, device=self.device)
+        y_hats = torch.zeros(mb, 1, device=self.device)  # type: ignore
         for i in range(exposure_probs.shape[1]):
             weights = exposure_probs[:, [i]]
 
             cur_one_hot = F.one_hot(
-                torch.tensor([i], device=self.device),
+                torch.tensor([i], device=self.device),  # type: ignore
                 self.exposure_network.binning.n_bins,
-            ).repeat(mb, 1)
+            ).repeat(mb, 1).float()
 
-            pred = self.x_to_y(cur_one_hot, covars)
+            pred = self.x_to_y(cur_one_hot, covars, taus)
 
             y_hats += weights * pred
 
@@ -241,37 +284,95 @@ class BinIVEstimator(MREstimator):
         self.outcome_network = outcome_network
         self.binning = binning
 
-    def effect(
-        self, x: torch.Tensor, covars: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        """Mean exposure to outcome effect at values of x."""
-        # Get the bin for the provided xs.
-        bins = self.binning.values_to_bin_indices(x, one_hot=True).to(
-            torch.float32
+    @torch.no_grad()
+    def _effect_no_covars(
+        self,
+        bins: torch.Tensor,
+        tau: Optional[float] = None
+    ):
+        if tau is not None:
+            tau_tens = torch.full((bins.size(0), 1), tau)
+            return self.outcome_network.x_to_y(bins, None, tau_tens)
+
+        return self.outcome_network.x_to_y(bins, None)
+
+    @torch.no_grad()
+    def _effect_covars(
+        self,
+        bins: torch.Tensor,
+        covars: torch.Tensor,
+        tau: Optional[float] = None
+    ):
+        n_cov_rows = covars.size(0)
+        x_one_hot = torch.repeat_interleave(bins, n_cov_rows, dim=0)
+        covars = covars.repeat(bins.size(0), 1)
+
+        if tau is not None:
+            y_hats = self.outcome_network.x_to_y(
+                x_one_hot,
+                covars,
+                torch.full((x_one_hot.size(0), 1), tau)
+            )
+        else:
+            y_hats = self.outcome_network.x_to_y(x_one_hot, covars)
+
+        means = torch.tensor(
+            [tens.mean() for tens in torch.split(y_hats, n_cov_rows)]
         )
+
+        return means
+
+    def effect_with_prediction_interval(
+        self,
+        x: torch.Tensor,
+        covars: Optional[torch.Tensor] = None,
+        alpha: Optional[float] = 0.05
+    ) -> torch.Tensor:
+        if (
+            not getattr(self.outcome_network.hparams, "sqr", False) and
+            alpha is not None
+        ):
+            warn(
+                "Can't generate prediction interval from unsupported outcome "
+                "model."
+            )
+            alpha = None
+
+        if alpha is None:
+            q: Optional[List[float]] = None
+        else:
+            q = [alpha, 0.5, 1 - alpha]
+
+        # Get the bin for the provided xs.
+        bins = self.binning.values_to_bin_indices(x, one_hot=True).float()
 
         if covars is None:
             # No covariables in the dataset or provided as arguments.
             # This will fail if covariables are necessary to go through the
             # network. The error won't be nice, so it will be better to catch
             # that. TODO
-            with torch.no_grad():
-                ys = self.outcome_network.x_to_y(bins, None)
-
-            return ys.reshape(-1)
+            if q is None:
+                return self._effect_no_covars(bins)
+            else:
+                return torch.hstack([
+                    self._effect_no_covars(bins, tau).reshape(-1, 1)
+                    for tau in q
+                ])
 
         else:
-            n_cov_rows = covars.size(0)
+            if q is None:
+                return self._effect_covars(bins, covars)
 
-            x_one_hot = torch.repeat_interleave(bins, n_cov_rows, dim=0)
-            covars = covars.repeat(bins.size(0), 1)
-            with torch.no_grad():
-                y_hats = self.outcome_network.x_to_y(x_one_hot, covars)
+            return torch.hstack([
+                self._effect_covars(bins, covars, tau).reshape(-1, 1)
+                for tau in q
+            ])
 
-            means = torch.tensor(
-                [tens.mean() for tens in torch.split(y_hats, n_cov_rows)]
-            )
-            return means
+    def effect(
+        self, x: torch.Tensor, covars: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Mean exposure to outcome effect at values of x."""
+        return self.effect_with_prediction_interval(x, covars, None).flatten()
 
     @classmethod
     def from_results(cls, directory_name: str) -> "BinIVEstimator":
@@ -340,6 +441,7 @@ def main(args: argparse.Namespace) -> None:
         dataset=dataset,
         binning=binning,
         no_plot=args.no_plot,
+        sqr=args.sqr,
         **kwargs,
     )
 
@@ -350,6 +452,7 @@ def fit_bin_iv(
     output_dir: str = DEFAULTS["output_dir"],  # type: ignore
     validation_proportion: float = DEFAULTS["validation_proportion"],  # type: ignore # noqa: E501
     no_plot: bool = False,
+    sqr: bool = False,
     exposure_hidden: List[int] = DEFAULTS["exposure_hidden"],  # type: ignore
     exposure_learning_rate: float = DEFAULTS["exposure_learning_rate"],  # type: ignore # noqa: E501
     exposure_weight_decay: float = DEFAULTS["exposure_weight_decay"],  # type: ignore # noqa: E501
@@ -439,6 +542,7 @@ def fit_bin_iv(
         batch_size=outcome_batch_size,
         max_epochs=outcome_max_epochs,
         accelerator=accelerator,
+        sqr=sqr
     )
 
     outcome_network = OutcomeWithBinsMLP.load_from_checkpoint(
@@ -452,6 +556,7 @@ def fit_bin_iv(
         estimator,
         covars,
         output_prefix=os.path.join(output_dir, "causal_estimates"),
+        alpha=0.1 if sqr else None
     )
 
     return estimator
@@ -500,12 +605,35 @@ def save_estimator_statistics(
     estimator: BinIVEstimator,
     covars: Optional[torch.Tensor],
     output_prefix: str = "causal_estimates",
+    alpha: Optional[float] = None
 ):
     # Save the causal effect at every bin midpoint.
     xs = torch.tensor(list(estimator.binning.get_midpoints()))
-    ys = estimator.effect(xs, covars)
+
+    if estimator.outcome_network.hparams.sqr and alpha:  # type: ignore
+        ys = estimator.effect_with_prediction_interval(xs, covars, alpha=alpha)
+        df = pd.DataFrame(
+            torch.hstack((xs.reshape(-1, 1), ys)).numpy(),
+            columns=["x", "y_do_x_lower", "y_do_x", "y_do_x_upper"]
+        )
+    else:
+        ys = estimator.effect(xs, covars)
+        df = pd.DataFrame({"x": xs, "y_do_x": ys})
+
     plt.figure()
-    plt.scatter(xs.numpy(), ys.numpy(), s=3)
+    plt.scatter(df["x"], df["y_do_x"], label="Estimated Y | do(X=x)", s=3)
+
+    if "y_do_x_lower" in df.columns:
+        # Add the CI on the plot.
+        assert alpha is not None
+        plt.fill_between(
+            df["x"],
+            df["y_do_x_lower"],
+            df["y_do_x_upper"],
+            color="#dddddd",
+            zorder=-1,
+            label=f"{int((1 - alpha) * 100)}% Prediction interval"
+        )
 
     binning = estimator.binning
     for left, right in zip(binning.bin_edges, binning.bin_edges[1:]):
@@ -514,10 +642,10 @@ def save_estimator_statistics(
 
     plt.xlabel("X")
     plt.ylabel("Y")
+    plt.legend()
     plt.savefig(f"{output_prefix}.png", dpi=600)
     plt.clf()
 
-    df = pd.DataFrame({"x": xs, "y_do_x": ys})
     df.to_csv(f"{output_prefix}.csv", index=False)
 
 
@@ -624,6 +752,7 @@ def train_outcome_model(
     batch_size: int,
     max_epochs: int,
     accelerator: Optional[str] = None,
+    sqr: bool = False
 ) -> None:
     info("Training outcome model.")
     n_covars = train_dataset[0][3].numel()
@@ -633,6 +762,7 @@ def train_outcome_model(
         lr=learning_rate,
         weight_decay=weight_decay,
         hidden=hidden,
+        sqr=sqr
     )
 
     train_dataloader = DataLoader(
@@ -693,6 +823,13 @@ def configure_argparse(parser) -> None:
         "--no-plot",
         help="Disable plotting of diagnostics.",
         action="store_true",
+    )
+
+    parser.add_argument(
+        "--sqr",
+        help="Enable simultaneous quantile regression to estimate a "
+        "prediction interval.",
+        action="store_true"
     )
 
     parser.add_argument(
