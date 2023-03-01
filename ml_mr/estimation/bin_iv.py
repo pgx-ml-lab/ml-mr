@@ -12,11 +12,12 @@ import argparse
 import os
 import pickle
 import sys
-from typing import Iterable, Iterator, List, Literal, Optional
+from typing import Iterable, Iterator, List, Literal, Optional, Union
 
 import matplotlib.pyplot as plt
 import pandas as pd
 import pytorch_lightning as pl
+from pytorch_lightning.loggers.logger import Logger
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -227,7 +228,7 @@ class OutcomeWithBinsMLP(MLP):
 
         if taus is None and self.hparams.sqr:  # type: ignore
             # Predict median by default.
-            taus = torch.empty(x_one_hot.size(0)).fill_(0.5)
+            taus = torch.full((x_one_hot.size(0), 1), 0.5)
 
         if taus is not None:
             stack.append(taus)
@@ -243,7 +244,7 @@ class OutcomeWithBinsMLP(MLP):
         taus: Optional[torch.Tensor] = None
     ):
         """Forward pass throught the exposure and outcome models."""
-        if self.hparams.sqr:
+        if self.hparams.sqr:  # type: ignore
             assert taus is not None, "Need quantile samples if SQR enabled."
 
         # x is the input to the exposure model.
@@ -442,6 +443,7 @@ def main(args: argparse.Namespace) -> None:
         binning=binning,
         no_plot=args.no_plot,
         sqr=args.sqr,
+        wandb_project=args.wandb_project,
         **kwargs,
     )
 
@@ -464,6 +466,7 @@ def fit_bin_iv(
     outcome_batch_size: int = DEFAULTS["outcome_batch_size"],  # type: ignore
     outcome_max_epochs: int = DEFAULTS["outcome_max_epochs"],  # type: ignore
     accelerator: str = DEFAULTS["accelerator"],  # type: ignore
+    wandb_project: Optional[str] = None
 ) -> BinIVEstimator:
     # Create output directory if needed.
     if not os.path.isdir(output_dir):
@@ -497,6 +500,7 @@ def fit_bin_iv(
         batch_size=exposure_batch_size,
         max_epochs=exposure_max_epochs,
         accelerator=accelerator,
+        wandb_project=wandb_project
     )
 
     exposure_network = ExposureCategoricalMLP.load_from_checkpoint(
@@ -528,6 +532,7 @@ def fit_bin_iv(
             output_filename=os.path.join(
                 output_dir, "exposure_model_confusion_matrix.png"
             ),
+            wandb_project=wandb_project
         )
 
     train_outcome_model(
@@ -542,7 +547,8 @@ def fit_bin_iv(
         batch_size=outcome_batch_size,
         max_epochs=outcome_max_epochs,
         accelerator=accelerator,
-        sqr=sqr
+        sqr=sqr,
+        wandb_project=wandb_project
     )
 
     outcome_network = OutcomeWithBinsMLP.load_from_checkpoint(
@@ -559,6 +565,12 @@ def fit_bin_iv(
         alpha=0.1 if sqr else None
     )
 
+    if wandb_project is not None:
+        import wandb
+        artifact = wandb.Artifact("results", type="results")
+        artifact.add_dir(output_dir)
+        wandb.log_artifact(artifact)
+
     return estimator
 
 
@@ -568,6 +580,7 @@ def plot_exposure_model(
     exposure_network: ExposureCategoricalMLP,
     val_dataset: Dataset,
     output_filename: str = "exposure_model_confusion_matrix.png",
+    wandb_project: Optional[str] = None
 ):
     assert hasattr(val_dataset, "__len__")
     dataloader = DataLoader(val_dataset, batch_size=len(val_dataset))
@@ -692,6 +705,7 @@ def train_exposure_model(
     batch_size: int,
     max_epochs: int,
     accelerator: Optional[str] = None,
+    wandb_project: Optional[str] = None
 ) -> None:
     info("Training exposure model.")
     model = ExposureCategoricalMLP(
@@ -721,6 +735,11 @@ def train_exposure_model(
         info(f"Removing file '{full_filename}'.")
         os.remove(full_filename)
 
+    logger: Union[bool, Iterable[Logger]] = True
+    if wandb_project is not None:
+        from pytorch_lightning.loggers.wandb import WandbLogger
+        logger = [WandbLogger(project=wandb_project)]
+
     trainer = pl.Trainer(
         log_every_n_steps=1,
         max_epochs=max_epochs,
@@ -736,6 +755,7 @@ def train_exposure_model(
                 monitor="exposure_val_loss",
             ),
         ],
+        logger=logger
     )
     trainer.fit(model, train_dataloader, val_dataloader)
 
@@ -752,7 +772,8 @@ def train_outcome_model(
     batch_size: int,
     max_epochs: int,
     accelerator: Optional[str] = None,
-    sqr: bool = False
+    sqr: bool = False,
+    wandb_project: Optional[str] = None
 ) -> None:
     info("Training outcome model.")
     n_covars = train_dataset[0][3].numel()
@@ -782,6 +803,11 @@ def train_outcome_model(
         info(f"Removing file '{full_filename}'.")
         os.remove(full_filename)
 
+    logger: Union[bool, Iterable[Logger]] = True
+    if wandb_project is not None:
+        from pytorch_lightning.loggers.wandb import WandbLogger
+        logger = [WandbLogger(project=wandb_project)]
+
     trainer = pl.Trainer(
         log_every_n_steps=1,
         max_epochs=max_epochs,
@@ -797,6 +823,7 @@ def train_outcome_model(
                 monitor="outcome_val_loss",
             ),
         ],
+        logger=logger
     )
     trainer.fit(model, train_dataloader, val_dataloader)
 
@@ -852,6 +879,14 @@ def configure_argparse(parser) -> None:
         "will be passed to Pytorch Lightning.",
     )
 
+    parser.add_argument(
+        "--wandb-project",
+        default=None,
+        type=str,
+        help="Activates the Weights and Biases logger using the provided "
+             "project name."
+    )
+
     MLP.add_mlp_arguments(
         parser,
         "exposure-",
@@ -876,5 +911,5 @@ def configure_argparse(parser) -> None:
 
 
 # Standard names for estimators.
-create_estimator = fit_bin_iv
-load_estimator = BinIVEstimator.from_results
+estimate = fit_bin_iv
+load = BinIVEstimator.from_results

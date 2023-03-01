@@ -1,5 +1,6 @@
 .vscode
-simulation_models/haodong_biorxiv_2023/scripts/simulated_datasets/*
+simulation_models/haodong_biorxiv_2023/simulated_datasets/*
+simulation_models/haodong_biorxiv_2023/results/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

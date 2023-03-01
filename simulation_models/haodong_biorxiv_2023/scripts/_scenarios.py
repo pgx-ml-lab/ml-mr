@@ -91,7 +91,7 @@ def scenario_3(sim: mr_sim.Simulation):
 def scenario_3_f(x: torch.Tensor) -> torch.Tensor:
     indicator = x > 0
     y = torch.zeros_like(x)
-    y[indicator] = -0.1 * x ** 2
+    y[indicator] = -0.1 * x[indicator] ** 2
     return y
 
 

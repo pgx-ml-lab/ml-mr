@@ -10,7 +10,8 @@ import ml_mr.simulation as mr_sim
 
 
 def main():
-    N = 10_000
+    # In the original paper, they use N = 10,000
+    N = 100_000
 
     for i_e_label, e_o_label in itertools.product(
         INSTRUMENT_EXPOSURE_SCENARIOS,
@@ -25,6 +26,7 @@ def main():
         sim = mr_sim.Simulation(
             N,
             prefix=os.path.join(
+                "..",
                 "simulated_datasets",
                 f"haodong-scenario-{i_e_label}{e_o_label}"
             )
