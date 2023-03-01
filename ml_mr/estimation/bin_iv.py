@@ -25,9 +25,9 @@ from torch.utils.data import DataLoader, Dataset, random_split
 from torchmetrics import ConfusionMatrix
 
 from ..logging import critical, info, warn
-from ..utils import MLP, temperature_scale
-from .core import MREstimator, IVDatasetWithGenotypes, _IVDataset
+from ..utils import MLP, temperature_scale, parse_project_and_run_name
 from ..utils.quantiles import quantile_loss
+from .core import MREstimator, IVDatasetWithGenotypes, _IVDataset
 
 
 # Types and literal definitions.
@@ -136,7 +136,7 @@ class ExposureCategoricalMLP(MLP):
             add_hidden_layer_batchnorm=add_hidden_layer_batchnorm,
             activations=activations,
             lr=lr,
-            weight_decay=lr,
+            weight_decay=weight_decay,
             loss=F.cross_entropy,
         )
         self.binning = binning
@@ -476,23 +476,18 @@ def fit_bin_iv(
     with open(os.path.join(output_dir, "binning.pkl"), "wb") as f:
         pickle.dump(binning, f)
 
-    covars = save_covariables(
-        dataset, os.path.join(output_dir, "covariables.pt")
-    )
+    covars = dataset.save_covariables(output_dir)
 
     # Split here into train and val.
     train_dataset, val_dataset = random_split(
         dataset, [1 - validation_proportion, validation_proportion]
     )
 
-    datum = train_dataset[0]  # x, y, iv, covars
-    n_exog = datum[2].numel() + datum[3].numel()
-
     train_exposure_model(
         train_dataset=train_dataset,
         val_dataset=val_dataset,
         binning=binning,
-        input_size=n_exog,
+        input_size=dataset.n_exog(),
         output_dir=output_dir,
         hidden=exposure_hidden,
         learning_rate=exposure_learning_rate,
@@ -532,7 +527,6 @@ def fit_bin_iv(
             output_filename=os.path.join(
                 output_dir, "exposure_model_confusion_matrix.png"
             ),
-            wandb_project=wandb_project
         )
 
     train_outcome_model(
@@ -567,7 +561,11 @@ def fit_bin_iv(
 
     if wandb_project is not None:
         import wandb
-        artifact = wandb.Artifact("results", type="results")
+        _, run_name = parse_project_and_run_name(wandb_project)
+        artifact = wandb.Artifact(
+            "results" if run_name is None else f"{run_name}_results",
+            type="results"
+        )
         artifact.add_dir(output_dir)
         wandb.log_artifact(artifact)
 
@@ -580,7 +578,6 @@ def plot_exposure_model(
     exposure_network: ExposureCategoricalMLP,
     val_dataset: Dataset,
     output_filename: str = "exposure_model_confusion_matrix.png",
-    wandb_project: Optional[str] = None
 ):
     assert hasattr(val_dataset, "__len__")
     dataloader = DataLoader(val_dataset, batch_size=len(val_dataset))
@@ -662,18 +659,6 @@ def save_estimator_statistics(
     df.to_csv(f"{output_prefix}.csv", index=False)
 
 
-def save_covariables(
-    dataset: Dataset, output_filename: str
-) -> Optional[torch.Tensor]:
-    dl = DataLoader(dataset, batch_size=len(dataset))  # type: ignore
-    covars = next(iter(dl))[3]
-    if covars.shape[1] == 0:
-        return None
-
-    torch.save(covars, output_filename)
-    return covars
-
-
 def validate_args(args: argparse.Namespace) -> None:
     if args.genotypes_backend is not None and args.sample_id_col is None:
         critical(
@@ -738,7 +723,10 @@ def train_exposure_model(
     logger: Union[bool, Iterable[Logger]] = True
     if wandb_project is not None:
         from pytorch_lightning.loggers.wandb import WandbLogger
-        logger = [WandbLogger(project=wandb_project)]
+        project, run_name = parse_project_and_run_name(wandb_project)
+        logger = [
+            WandbLogger(name=run_name, project=project)
+        ]
 
     trainer = pl.Trainer(
         log_every_n_steps=1,
@@ -806,7 +794,10 @@ def train_outcome_model(
     logger: Union[bool, Iterable[Logger]] = True
     if wandb_project is not None:
         from pytorch_lightning.loggers.wandb import WandbLogger
-        logger = [WandbLogger(project=wandb_project)]
+        project, run_name = parse_project_and_run_name(wandb_project)
+        logger = [
+            WandbLogger(name=run_name, project=project)
+        ]
 
     trainer = pl.Trainer(
         log_every_n_steps=1,
@@ -884,7 +875,8 @@ def configure_argparse(parser) -> None:
         default=None,
         type=str,
         help="Activates the Weights and Biases logger using the provided "
-             "project name."
+             "project name. Patterns such as project:run_name are also "
+             "allowed."
     )
 
     MLP.add_mlp_arguments(

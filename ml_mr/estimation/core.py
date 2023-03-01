@@ -1,10 +1,11 @@
+import os
 from typing import Optional, Literal, Callable, TypeVar, Iterable, Tuple, List
 import argparse
 import itertools
 
 import pandas as pd
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 from scipy.interpolate import interp1d
 from pytorch_genotypes.dataset import (
     BACKENDS,
@@ -108,6 +109,27 @@ class _IVDataset(Dataset):
 
     def __len__(self) -> int:
         return self.ivs.size(0)
+
+    def n_exog(self) -> int:
+        """Counts the number of exogenous variables (IVs + covariables)."""
+        _, _, ivs, covars = self[0]
+        return ivs.numel() + covars.numel()
+
+    def save_covariables(
+        self,
+        output_directory: str
+    ) -> Optional[torch.Tensor]:
+        """Saves the covars to disk and returns them."""
+        output_filename = os.path.join(output_directory, "covariables.pt")
+
+        if (
+            isinstance(self.covariables, torch.Tensor) and
+            self.covariables.numel() > 0
+        ):
+            torch.save(self.covariables, output_filename)
+            return self.covariables
+
+        return None
 
     @staticmethod
     def from_dataframe(
@@ -238,7 +260,7 @@ class IVDatasetWithGenotypes(_IVDataset):
         covars = torch.Tensor()
 
         if self.covariable_idx_tens.numel() > 0:
-            covars = cur.exogenou[:, self.covariable_idx_tens]
+            covars = cur.exogenous[:, self.covariable_idx_tens]
 
         if self.iv_idx_tens.numel() > 0:
             instruments = torch.hstack(
@@ -249,6 +271,10 @@ class IVDatasetWithGenotypes(_IVDataset):
 
     def __len__(self) -> int:
         return len(self.genetic_dataset)
+
+    @property
+    def covariables(self):
+        self.genetic_dataset.exog[:, self.covariable_idx_tens]
 
     @property
     def exposure(self):
