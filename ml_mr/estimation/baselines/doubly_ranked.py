@@ -20,7 +20,11 @@ df = pd.DataFrame({
 })
 df["u"] = scipy.stats.norm.rvs(size=n)
 df["x"] = 0.21 * df.z + 0.2 * df.u + scipy.stats.norm.rvs(size=n)
-df["y"] = 0.314159 * df.x + 0.15 * df.u + scipy.stats.norm.rvs(size=n)
+df["y"] = (
+    0.314159 * df.x +
+    0.05 * df.x ** 2 +
+    0.15 * df.u + scipy.stats.norm.rvs(size=n)
+)
 
 dataset = _IVDataset.from_dataframe(
     df, "x", "y", ["z"]
@@ -31,6 +35,7 @@ estimator = fit_doubly_ranked(dataset)
 """
 
 from typing import Tuple, Optional, Iterable
+import os
 
 import torch
 import pandas as pd
@@ -67,8 +72,8 @@ class DoublyRankedEstimator(MREstimator):
         return interpolated_effects * x
 
     @classmethod
-    def from_results(cls, filename: str) -> "DoublyRankedEstimator":
-        df = pd.read_csv(filename)
+    def from_results(cls, results_dir: str) -> "DoublyRankedEstimator":
+        df = pd.read_csv(os.path.join(results_dir, "lace.csv"))
         return cls(df)
 
 
@@ -100,8 +105,14 @@ def create_strata(
 
 def fit_doubly_ranked(
     dataset: _IVDataset,
-    q: int = 10
+    q: int = 10,
+    output_dir: str = "doubly_ranked_results",
+    no_plot: bool = False
 ) -> DoublyRankedEstimator:
+    # Create output directory if needed.
+    if not os.path.isdir(output_dir):
+        os.makedirs(output_dir)
+
     # Load the dataset and prepare the data.
     dl = DataLoader(dataset, batch_size=len(dataset))
     data = next(iter(dl))
@@ -141,18 +152,39 @@ def fit_doubly_ranked(
         results.append((mean_x, cur_beta, cur_se))
 
     results_df = pd.DataFrame(results, columns=["mean_x", "lace", "lace_se"])
+    results_df.index.name = "strata"
 
-    # Plot.
-    plt.errorbar(
-        results_df.index.values,
-        results_df.lace,
-        yerr=1.96*results_df.lace_se,
-        fmt="o",
-        markersize=5
-    )
-    plt.xlabel("Strata rank")
-    plt.ylabel("LACE estimate (95% CI)")
-    plt.show()
+    results_df.to_csv(os.path.join(output_dir, "lace.csv"))
+
+    if not no_plot:
+        # Plot the LACE estimates.
+        plt.errorbar(
+            results_df.index.values,
+            results_df["lace"],
+            yerr=1.96*results_df["lace_se"],
+            fmt="o",
+            markersize=5
+        )
+        plt.xlabel("Strata rank")
+        plt.ylabel("LACE estimate (95% CI)")
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, "lace.png"), dpi=400)
+        plt.clf()
+        plt.close()
+
+        # Plot the E[Y|do(X)] estimates.
+        idx = np.argsort(results_df["mean_x"])
+        plt.plot(
+            results_df.iloc[idx]["mean_x"],
+            results_df.iloc[idx]["lace"] * results_df.iloc[idx]["mean_x"],
+            marker="o"
+        )
+        plt.xlabel("Mean of exposure (x) in strata")
+        plt.ylabel("Predicted Y | do(X=x)")
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, "causal_effect.png"), dpi=400)
+        plt.clf()
+        plt.close()
 
     # Return an estimator instance.
     return DoublyRankedEstimator(results_df)
