@@ -81,7 +81,7 @@ def create_strata(
     df: pd.DataFrame,
     q: int,
     z_col: str,
-    x_col: str
+    x_col: str,
 ):
     # Drop samples if we can't make an event split.
     n = df.shape[0]
@@ -90,9 +90,15 @@ def create_strata(
     if n_keep < n:
         warn(f"Dropping {n - n_keep} individual(s) at random.")
 
-    df = df.sample(n=n_keep).sort_values([z_col, x_col])
+    df = df.sample(n=n_keep).sort_values([z_col])
 
+    # Sort by blocks of the pre-strata.
     n_strata = n_keep // q
+    for pre_strata_indices in np.split(np.arange(n_keep), n_strata):
+        df.iloc[pre_strata_indices] = df.iloc[pre_strata_indices]\
+            .sort_values(x_col)
+
+    # Create the strata by matching ranks from pre-strata.
     strata = []
     for i in range(0, q):
         cur_indices = np.fromiter((
@@ -100,7 +106,7 @@ def create_strata(
         ), dtype=int)
         strata.append(cur_indices)
 
-    return strata
+    return df, strata
 
 
 def fit_doubly_ranked(
@@ -138,16 +144,14 @@ def fit_doubly_ranked(
     df = pd.DataFrame(data_mat, columns=names)
 
     # Create strata.
-    strata = create_strata(df, q, "z", "x")
+    df, strata = create_strata(df, q, "z", "x")
 
     # Compute the LACE estimates.
     results = []
 
     for mask in strata:
         cur = df.iloc[mask, :]
-
         mean_x = cur["x"].mean()
-
         cur_beta, cur_se = iv_estimator(cur, "y", "x", ["z"], covar_cols)
         results.append((mean_x, cur_beta, cur_se))
 
@@ -165,6 +169,7 @@ def fit_doubly_ranked(
             fmt="o",
             markersize=5
         )
+        plt.axhline(y=0, ls="--", lw=1, color="black")
         plt.xlabel("Strata rank")
         plt.ylabel("LACE estimate (95% CI)")
         plt.tight_layout()

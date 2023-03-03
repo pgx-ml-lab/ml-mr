@@ -3,10 +3,10 @@
 export SHELL=$(type -p bash)
 
 doquantileiv() {
-    scenario=$(echo $1 | grep -E -o 'haodong-scenario.+$' | cut -f 1 -d '_')
+    scenario=$(echo $1 | grep -E -o 'tian-scenario.+$' | cut -f 1 -d '_')
     output="../results/${scenario}_quantile_iv"
 
-    run_name=$(echo $scenario | sed 's/haodong-scenario-//')
+    run_name=$(echo $scenario | sed 's/tian-scenario-//')
 
     ml-mr estimation quantile_iv \
         --q 8 \
@@ -18,10 +18,12 @@ doquantileiv() {
         --instruments Z \
         --exposure X \
         --outcome Y \
-        --wandb-project "haodong_2023_sim:${run_name}_quantile_iv"
+        --exposure-add-input-batchnorm \
+        --outcome-add-input-batchnorm \
+        --wandb-project "tian_2022_sim:${run_name}_quantile_iv"
 }
 
 export -f doquantileiv
 
-parallel --jobs 1 doquantileiv ::: ../simulated_datasets/haodong-scenario-*.csv.gz
+parallel --jobs 1 doquantileiv ::: ../simulated_datasets/tian-scenario-*.csv.gz
 

@@ -36,6 +36,8 @@ DEFAULTS = {
     "outcome_max_epochs": 1000,
     "exposure_weight_decay": 1e-4,
     "outcome_weight_decay": 1e-4,
+    "exposure_add_input_batchnorm": False,
+    "outcome_add_input_batchnorm": False,
     "accelerator": "gpu" if (
         torch.cuda.is_available() and torch.cuda.device_count() > 0
     ) else "cpu",
@@ -366,6 +368,7 @@ def train_exposure_model(
     learning_rate: float,
     weight_decay: float,
     batch_size: int,
+    add_input_batchnorm: bool,
     max_epochs: int,
     accelerator: Optional[str] = None,
     wandb_project: Optional[str] = None
@@ -377,7 +380,7 @@ def train_exposure_model(
         hidden=hidden,
         lr=learning_rate,
         weight_decay=weight_decay,
-        add_input_layer_batchnorm=True,
+        add_input_layer_batchnorm=add_input_batchnorm,
         add_hidden_layer_batchnorm=True,
     )
 
@@ -435,6 +438,7 @@ def train_outcome_model(
     learning_rate: float,
     weight_decay: float,
     batch_size: int,
+    add_input_batchnorm: bool,
     max_epochs: int,
     accelerator: Optional[str] = None,
     sqr: bool = False,
@@ -448,6 +452,7 @@ def train_outcome_model(
         lr=learning_rate,
         weight_decay=weight_decay,
         hidden=hidden,
+        add_input_layer_batchnorm=add_input_batchnorm,
         sqr=sqr
     )
 
@@ -508,11 +513,13 @@ def fit_quantile_iv(
     exposure_weight_decay: float = DEFAULTS["exposure_weight_decay"],  # type: ignore # noqa: E501
     exposure_batch_size: int = DEFAULTS["exposure_batch_size"],  # type: ignore
     exposure_max_epochs: int = DEFAULTS["exposure_max_epochs"],  # type: ignore
+    exposure_add_input_batchnorm: bool = DEFAULTS["exposure_add_input_batchnorm"],  # type: ignore # noqa: E501
     outcome_hidden: List[int] = DEFAULTS["outcome_hidden"],  # type: ignore
     outcome_learning_rate: float = DEFAULTS["outcome_learning_rate"],  # type: ignore # noqa: E501
     outcome_weight_decay: float = DEFAULTS["outcome_weight_decay"],  # type: ignore # noqa: E501
     outcome_batch_size: int = DEFAULTS["outcome_batch_size"],  # type: ignore
     outcome_max_epochs: int = DEFAULTS["outcome_max_epochs"],  # type: ignore
+    outcome_add_input_batchnorm: bool = DEFAULTS["outcome_add_input_batchnorm"],  # type: ignore # noqa: E501
     accelerator: str = DEFAULTS["accelerator"],  # type: ignore
     wandb_project: Optional[str] = None
 ) -> QuantileIVEstimator:
@@ -541,6 +548,7 @@ def fit_quantile_iv(
         learning_rate=exposure_learning_rate,
         weight_decay=exposure_weight_decay,
         batch_size=exposure_batch_size,
+        add_input_batchnorm=exposure_add_input_batchnorm,
         max_epochs=exposure_max_epochs,
         accelerator=accelerator,
         wandb_project=wandb_project
@@ -568,6 +576,7 @@ def fit_quantile_iv(
         learning_rate=outcome_learning_rate,
         weight_decay=outcome_weight_decay,
         batch_size=outcome_batch_size,
+        add_input_batchnorm=outcome_add_input_batchnorm,
         max_epochs=outcome_max_epochs,
         accelerator=accelerator,
         sqr=sqr,

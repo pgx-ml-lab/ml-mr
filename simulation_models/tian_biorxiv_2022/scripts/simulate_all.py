@@ -28,7 +28,7 @@ def main():
             prefix=os.path.join(
                 "..",
                 "simulated_datasets",
-                f"haodong-scenario-{i_e_label}{e_o_label}"
+                f"tian-scenario-{i_e_label}{e_o_label}"
             )
         )
 

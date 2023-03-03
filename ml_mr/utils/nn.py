@@ -155,3 +155,8 @@ class MLP(pl.LightningModule):
             type=float,
             default=defaults.get("weight-decay", 0)
         )
+
+        group.add_argument(
+            f"--{prefix}add-input-batchnorm",
+            action="store_true"
+        )

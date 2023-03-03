@@ -1,6 +1,6 @@
 .vscode
-simulation_models/haodong_biorxiv_2023/simulated_datasets/*
-simulation_models/haodong_biorxiv_2023/results/*
+simulation_models/tian_biorxiv_2022/simulated_datasets/*
+simulation_models/tian_biorxiv_2022/results/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
