@@ -217,3 +217,7 @@ def iv_estimator(
     ).fit(cov_type="robust")
 
     return model.params[x_col], model.std_errors[x_col]
+
+
+estimate = fit_doubly_ranked
+load = DoublyRankedEstimator.from_results

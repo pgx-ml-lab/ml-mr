@@ -9,6 +9,7 @@ Command-line interface entry-point for all tasks related to model evaluation.
 
 """
 
+from typing import Tuple, Callable
 import sys
 import os
 import argparse
@@ -16,7 +17,7 @@ import argparse
 import torch
 import numpy as np
 
-from ..estimation import MODELS
+from ..estimation import MODELS, MREstimator
 from . import mse
 
 
@@ -58,7 +59,42 @@ def parse_args(argv):
         help="Domain used to evaluate metrics such as the mean squared error."
     )
 
+    parser.add_argument(
+        "--plot",
+        action="store_true",
+        help="Plot the true function and prediction together."
+    )
+
     return parser.parse_args(argv)
+
+
+def plot(
+    estimator: MREstimator,
+    true_function: Callable[[torch.Tensor], torch.Tensor],
+    domain: Tuple[float, float] = (-3, 3),
+    n_points: int = 5000
+):
+    import matplotlib.pyplot as plt
+
+    xs = torch.linspace(domain[0], domain[1], n_points)
+    y_hat = estimator.effect(xs)
+    true_y = true_function(xs)
+
+    plt.scatter(
+        xs.numpy(),
+        true_y.numpy().reshape(-1),
+        s=1,
+        label="True Y"
+    )
+    plt.scatter(
+        xs.numpy(),
+        y_hat.numpy().reshape(-1),
+        s=1,
+        label="Predicted Y"
+    )
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
 
 
 def main():
@@ -92,9 +128,10 @@ def main():
     domain_lower, domain_upper = [float(i) for i in args.domain.split(",")]
 
     cur_mse = mse(
-        estimator,
-        true_function,
-        domain=(domain_lower, domain_upper)
+        estimator, true_function, domain=(domain_lower, domain_upper)
     )
 
     print(cur_mse)
+
+    if args.plot:
+        plot(estimator, true_function, domain=(domain_lower, domain_upper))
