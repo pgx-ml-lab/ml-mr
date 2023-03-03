@@ -59,7 +59,7 @@ class ExposureQuantileMLP(MLP):
     ):
         """The model will predict q quantiles."""
         # q = 0, 0.2, 0.4, 0.6, 0.8, 1
-        self.quantiles = torch.linspace(0, 1, q)
+        self.quantiles = torch.linspace(0.01, 0.99, q)
 
         loss = QuantileLossMulti(self.quantiles)
 
@@ -455,11 +455,11 @@ def train_outcome_model(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=4,
+        num_workers=0,
     )
 
     val_dataloader = DataLoader(
-        val_dataset, batch_size=len(val_dataset), num_workers=4  # type: ignore
+        val_dataset, batch_size=len(val_dataset), num_workers=0  # type: ignore
     )
 
     # Remove checkpoint if exists.

@@ -1,0 +1,182 @@
+"""
+Implementation of the doubly ranked method.
+
+Tian, H., Mason, A. M., Liu, C. & Burgess, S. Relaxing parametric assumptions
+for non-linear Mendelian randomization using a doubly-ranked stratification
+method. bioRxiv 2022.06.28.497930 (2022) doi:10.1101/2022.06.28.497930
+
+from ml_mr.estimation.core import _IVDataset
+from ml_mr.estimation.baselines.doubly_ranked import DoublyRankedEstimator
+
+---
+
+import pandas as pd
+import scipy
+from ml_mr.estimation.core import _IVDataset
+from ml_mr.estimation.baselines.doubly_ranked import fit_doubly_ranked
+n = 100_000
+df = pd.DataFrame({
+    "z": scipy.stats.norm.rvs(size=n)
+})
+df["u"] = scipy.stats.norm.rvs(size=n)
+df["x"] = 0.21 * df.z + 0.2 * df.u + scipy.stats.norm.rvs(size=n)
+df["y"] = 0.314159 * df.x + 0.15 * df.u + scipy.stats.norm.rvs(size=n)
+
+dataset = _IVDataset.from_dataframe(
+    df, "x", "y", ["z"]
+)
+
+estimator = fit_doubly_ranked(dataset)
+
+"""
+
+from typing import Tuple, Optional, Iterable
+
+import torch
+import pandas as pd
+import numpy as np
+from linearmodels.iv.model import IV2SLS
+from torch.utils.data import DataLoader
+import matplotlib.pyplot as plt
+
+from ...logging import warn
+from ..core import _IVDataset, MREstimator
+
+
+class DoublyRankedEstimator(MREstimator):
+    def __init__(self, results: pd.DataFrame):
+        # mean_x, lace, lace_se
+        self.results = results
+
+        self._interpolator = self.interpolate(
+            results["mean_x"], results["lace"]
+        )
+
+    def effect(
+        self,
+        x: torch.Tensor,
+        covars: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        if covars is not None:
+            warn(
+                "The doubly ranked method does not estimate conditional "
+                "treatment effects. The provided covariates will be ignored."
+            )
+
+        interpolated_effects = self._interpolator(x)
+        return interpolated_effects * x
+
+    @classmethod
+    def from_results(cls, filename: str) -> "DoublyRankedEstimator":
+        df = pd.read_csv(filename)
+        return cls(df)
+
+
+def create_strata(
+    df: pd.DataFrame,
+    q: int,
+    z_col: str,
+    x_col: str
+):
+    # Drop samples if we can't make an event split.
+    n = df.shape[0]
+    n_keep = n - (df.shape[0] % q)
+
+    if n_keep < n:
+        warn(f"Dropping {n - n_keep} individual(s) at random.")
+
+    df = df.sample(n=n_keep).sort_values([z_col, x_col])
+
+    n_strata = n_keep // q
+    strata = []
+    for i in range(0, q):
+        cur_indices = np.fromiter((
+            i + k * q for k in range(n_strata)
+        ), dtype=int)
+        strata.append(cur_indices)
+
+    return strata
+
+
+def fit_doubly_ranked(
+    dataset: _IVDataset,
+    q: int = 10
+) -> DoublyRankedEstimator:
+    # Load the dataset and prepare the data.
+    dl = DataLoader(dataset, batch_size=len(dataset))
+    data = next(iter(dl))
+
+    x, y, iv, covars = [tens.numpy() for tens in data]
+
+    del data, dl
+
+    if iv.shape[1] > 1:
+        warn("Collapsing IVs into an unweighted score because the doubly "
+             "ranked methods needs a single continuous IV.")
+        iv = np.sum(iv, axis=1, keepdims=True)
+
+    data_mat = np.hstack((x, y, iv, covars))
+    names = ["x", "y", "z"]
+
+    covar_cols = []
+    for i in range(covars.shape[1]):
+        covar_cols.append(f"covars{i+1}")
+
+    names += covar_cols
+
+    df = pd.DataFrame(data_mat, columns=names)
+
+    # Create strata.
+    strata = create_strata(df, q, "z", "x")
+
+    # Compute the LACE estimates.
+    results = []
+
+    for mask in strata:
+        cur = df.iloc[mask, :]
+
+        mean_x = cur["x"].mean()
+
+        cur_beta, cur_se = iv_estimator(cur, "y", "x", ["z"], covar_cols)
+        results.append((mean_x, cur_beta, cur_se))
+
+    results_df = pd.DataFrame(results, columns=["mean_x", "lace", "lace_se"])
+
+    # Plot.
+    plt.errorbar(
+        results_df.index.values,
+        results_df.lace,
+        yerr=1.96*results_df.lace_se,
+        fmt="o",
+        markersize=5
+    )
+    plt.xlabel("Strata rank")
+    plt.ylabel("LACE estimate (95% CI)")
+    plt.show()
+
+    # Return an estimator instance.
+    return DoublyRankedEstimator(results_df)
+
+
+def iv_estimator(
+    df: pd.DataFrame,
+    y_col: str,
+    x_col: str,
+    z_cols: Iterable[str],
+    covar_cols: Optional[Iterable[str]]
+) -> Tuple[float, float]:
+    df = df.copy()
+    df["const"] = 1
+
+    exog = ["const"]
+    if covar_cols is not None:
+        exog += list(covar_cols)
+
+    model = IV2SLS(
+        df[y_col],
+        df[exog],
+        df[x_col],
+        df[z_cols]
+    ).fit(cov_type="robust")
+
+    return model.params[x_col], model.std_errors[x_col]

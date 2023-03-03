@@ -2,14 +2,14 @@
 
 export SHELL=$(type -p bash)
 
-dobiniv() {
+doquantileiv() {
     scenario=$(echo $1 | grep -E -o 'haodong-scenario.+$' | cut -f 1 -d '_')
-    output="../results/${scenario}_bin_iv"
+    output="../results/${scenario}_quantile_iv"
 
     run_name=$(echo $scenario | sed 's/haodong-scenario-//')
 
-    ml-mr estimation bin_iv \
-        --n-bins 15 \
+    ml-mr estimation quantile_iv \
+        --q 8 \
         --output-dir $output \
         --sqr \
         --outcome-type continuous \
@@ -18,9 +18,10 @@ dobiniv() {
         --instruments Z \
         --exposure X \
         --outcome Y \
-        --wandb-project "haodong_2023_sim:${run_name}_deep_iv"
+        --wandb-project "haodong_2023_sim:${run_name}_quantile_iv"
 }
 
-export -f dobiniv
+export -f doquantileiv
 
-parallel --jobs 1 dobiniv ::: ../simulated_datasets/haodong-scenario-*.csv.gz
+parallel --jobs 1 doquantileiv ::: ../simulated_datasets/haodong-scenario-*.csv.gz
+

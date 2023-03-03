@@ -1,18 +1,16 @@
-import os
-from typing import Optional, Literal, Callable, TypeVar, Iterable, Tuple, List
 import argparse
 import itertools
+import os
+from typing import (Callable, Iterable, List, Literal, Optional, Tuple,
+                    TypeVar, Union)
 
+import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset, DataLoader
+from pytorch_genotypes.dataset import (BACKENDS, GeneticDatasetBackend,
+                                       PhenotypeGeneticDataset)
 from scipy.interpolate import interp1d
-from pytorch_genotypes.dataset import (
-    BACKENDS,
-    PhenotypeGeneticDataset,
-    GeneticDatasetBackend
-)
-
+from torch.utils.data import Dataset
 
 INTERPOLATION = ["linear", "quadratic", "cubic"]
 Interpolation = Literal["linear", "quadratic", "cubic"]
@@ -51,14 +49,27 @@ class MREstimator(object):
 
     @staticmethod
     def interpolate(
-        xs: torch.Tensor,
-        ys: torch.Tensor,
-        mode: Interpolation = "cubic"
+        xs: Union[torch.Tensor, np.ndarray],
+        ys: Union[torch.Tensor, np.ndarray],
+        mode: Interpolation = "cubic",
+        bounds_error: bool = True
     ) -> InterpolationCallable:
         if mode not in INTERPOLATION:
             raise ValueError(f"Unknown interpolation type {mode}.")
 
-        return interp1d(xs.numpy(), ys.numpy(), kind=mode, bounds_error=False)
+        if isinstance(xs, torch.Tensor):
+            xs = xs.numpy()
+
+        if isinstance(ys, torch.Tensor):
+            ys = ys.numpy()
+
+        interpolator = interp1d(xs, ys, kind=mode, bounds_error=bounds_error)
+
+        def interpolate_torch(x):
+            return torch.from_numpy(interpolator(x))
+
+        return interpolate_torch
+
 
     @classmethod
     def from_results(

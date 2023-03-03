@@ -406,6 +406,10 @@ class BinIVDataset(_IVDataset):
             .values_to_bin_indices(dataset.exposure)\
             .flatten()
 
+    @property
+    def covariables(self):
+        return self.dataset.covariables
+
     def __getitem__(self, index):
         _, y, iv, covars = self.dataset[index]
         x_bin = self.binned_exposure[index]
