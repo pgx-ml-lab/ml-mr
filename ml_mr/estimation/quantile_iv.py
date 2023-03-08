@@ -4,6 +4,7 @@ distribution.
 """
 
 import argparse
+import json
 import os
 import sys
 from typing import Iterable, List, Optional, Tuple, Union
@@ -20,6 +21,7 @@ from torch.utils.data import DataLoader, Dataset, random_split
 from ..logging import critical, info
 from ..utils import MLP, parse_project_and_run_name
 from ..utils.quantiles import QuantileLossMulti, quantile_loss
+from ..utils.conformal import get_conformal_adjustment
 from .core import (IVDatasetWithGenotypes, MREstimator,
                    MREstimatorWithUncertainty, _IVDataset)
 
@@ -258,9 +260,15 @@ class QuantileIVEstimator(MREstimator):
         )
 
         if outcome_network.hparams.sqr:  # type: ignore
+            with open(os.path.join(dir_name, "meta.json"), "rt") as f:
+                meta = json.load(f)
+                q_hat = meta.get("q_hat", 0)
+
             return QuantileIVEstimatorWithUncertainty(
                 exposure_network,
-                outcome_network
+                outcome_network,
+                alpha=0.1,
+                q_hat=q_hat
             )
 
         return cls(exposure_network, outcome_network)
@@ -274,11 +282,15 @@ class QuantileIVEstimatorWithUncertainty(
         self,
         exposure_network: ExposureQuantileMLP,
         outcome_network: OutcomeMLP,
-        alpha: float = 0.1
+        alpha: float = 0.1,
+        q_hat: float = 0
     ):
         self.exposure_network = exposure_network
         self.outcome_network = outcome_network
         self.alpha = alpha
+
+        # Conformal prediction adjustment.
+        self.q_hat = q_hat
 
     @torch.no_grad()
     def _effect_no_covars_unc(
@@ -323,16 +335,23 @@ class QuantileIVEstimatorWithUncertainty(
         q = [alpha, 0.5, 1 - alpha]
 
         if covars is None:
-            return torch.hstack([
+            pred = torch.hstack([
                 self._effect_no_covars_unc(x, tau).reshape(-1, 1)
                 for tau in q
             ])
 
         else:
-            return torch.hstack([
+            pred = torch.hstack([
                 self._effect_covars_unc(x, covars, tau).reshape(-1, 1)
                 for tau in q
             ])
+
+        # Conformal prediction adjustment if set.
+        conformal_adj = [-self.q_hat, 0, self.q_hat]
+        for j in range(3):
+            pred[:, j] = pred[:, j] + conformal_adj[j]
+
+        return pred
 
 
 def main(args: argparse.Namespace) -> None:
@@ -546,6 +565,9 @@ def fit_quantile_iv(
     if not os.path.isdir(output_dir):
         os.makedirs(output_dir)
 
+    # Metadata dictionary that will be saved alongside the results.
+    meta = {}
+
     covars = dataset.save_covariables(output_dir)
 
     min_x = torch.min(dataset.exposure).item()
@@ -608,11 +630,25 @@ def fit_quantile_iv(
     ).eval()  # type: ignore
 
     if sqr:
+        # Conformal prediction.
+        q_hat = get_conformal_adjustment(
+            outcome_network, val_dataset, alpha=0.1  # type: ignore
+        )
+        info(f"Conformal adjustment estimated at q_hat={q_hat}.")
+
+        meta["q_hat"] = q_hat
+
+        # TODO make the conformal adjustment opt out.
         estimator: QuantileIVEstimator = QuantileIVEstimatorWithUncertainty(
-            exposure_network, outcome_network, alpha=0.1
+            exposure_network, outcome_network, alpha=0.1, q_hat=q_hat
         )
     else:
         estimator = QuantileIVEstimator(exposure_network, outcome_network)
+
+    # Save the metadata, estimator statistics and log artifact to WandB if
+    # required.
+    with open(os.path.join(output_dir, "meta.json"), "wt") as f:
+        json.dump(meta, f)
 
     save_estimator_statistics(
         estimator,
