@@ -17,7 +17,7 @@ import argparse
 import torch
 import numpy as np
 
-from ..estimation import MODELS, MREstimator
+from ..estimation import MODELS, MREstimator, MREstimatorWithUncertainty
 from . import mse
 
 
@@ -77,7 +77,17 @@ def plot(
     import matplotlib.pyplot as plt
 
     xs = torch.linspace(domain[0], domain[1], n_points)
-    y_hat = estimator.effect(xs)
+
+    uncertainty = False
+    if isinstance(estimator, MREstimatorWithUncertainty):
+        uncertainty = True
+        y_hat_ci = estimator.effect_with_prediction_interval(xs, alpha=0.1)
+        y_hat_l = y_hat_ci[:, 0]
+        y_hat = y_hat_ci[:, 1]
+        y_hat_u = y_hat_ci[:, 2]
+    else:
+        y_hat = estimator.effect(xs)
+
     true_y = true_function(xs)
 
     plt.scatter(
@@ -92,6 +102,15 @@ def plot(
         s=1,
         label="Predicted Y"
     )
+    if uncertainty:
+        plt.fill_between(
+            xs.numpy(),
+            y_hat_l.numpy().reshape(-1),
+            y_hat_u.numpy().reshape(-1),
+            zorder=-1,
+            color="#eeeeee"
+        )
+
     plt.legend()
     plt.tight_layout()
     plt.show()

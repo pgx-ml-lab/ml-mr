@@ -1,4 +1,4 @@
-from .core import MREstimator
+from .core import MREstimator, MREstimatorWithUncertainty
 
 from . import bin_iv
 from . import quantile_iv
