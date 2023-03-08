@@ -3,25 +3,25 @@ Implementation of an IV method based on estimating quantiles of the exposure
 distribution.
 """
 
+import argparse
 import os
 import sys
-import argparse
-from typing import Iterable, Optional, List, Union, Tuple
+from typing import Iterable, List, Optional, Tuple, Union
 
-import torch
-from torch.utils.data import Dataset, DataLoader, random_split
-import torch.nn as nn
-import torch.nn.functional as F
-import pytorch_lightning as pl
-from pytorch_lightning.loggers.logger import Logger
 import matplotlib.pyplot as plt
 import pandas as pd
+import pytorch_lightning as pl
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from pytorch_lightning.loggers.logger import Logger
+from torch.utils.data import DataLoader, Dataset, random_split
 
-from .core import MREstimator, IVDatasetWithGenotypes, _IVDataset
-from ..logging import critical, info, warn
+from ..logging import critical, info
 from ..utils import MLP, parse_project_and_run_name
 from ..utils.quantiles import QuantileLossMulti, quantile_loss
-
+from .core import (IVDatasetWithGenotypes, MREstimator,
+                   MREstimatorWithUncertainty, _IVDataset)
 
 # Default values definitions.
 # fmt: off
@@ -213,12 +213,7 @@ class QuantileIVEstimator(MREstimator):
     def _effect_no_covars(
         self,
         x: torch.Tensor,
-        tau: Optional[float] = None
     ):
-        if tau is not None:
-            tau_tens = torch.full((x.size(0), 1), tau)
-            return self.outcome_network.x_to_y(x, None, tau_tens)
-
         return self.outcome_network.x_to_y(x, None)
 
     @torch.no_grad()
@@ -226,72 +221,18 @@ class QuantileIVEstimator(MREstimator):
         self,
         x: torch.Tensor,
         covars: torch.Tensor,
-        tau: Optional[float] = None
     ):
         n_cov_rows = covars.size(0)
         x_rep = torch.repeat_interleave(x, n_cov_rows, dim=0)
         covars = covars.repeat(x.size(0), 1)
 
-        if tau is not None:
-            y_hats = self.outcome_network.x_to_y(
-                x_rep,
-                covars,
-                torch.full((x_rep.size(0), 1), tau)
-            )
-        else:
-            y_hats = self.outcome_network.x_to_y(x_rep, covars)
+        y_hats = self.outcome_network.x_to_y(x_rep, covars)
 
         means = torch.tensor(
             [tens.mean() for tens in torch.split(y_hats, n_cov_rows)]
         )
 
         return means
-
-    def effect_with_prediction_interval(
-        self,
-        x: torch.Tensor,
-        covars: Optional[torch.Tensor] = None,
-        alpha: Optional[float] = 0.05
-    ) -> torch.Tensor:
-        if (
-            not getattr(self.outcome_network.hparams, "sqr", False) and
-            alpha is not None
-        ):
-            warn(
-                "Can't generate prediction interval from unsupported outcome "
-                "model."
-            )
-            alpha = None
-
-        if x.ndim == 1:
-            x = x.reshape(-1, 1)
-
-        if alpha is None:
-            q: Optional[List[float]] = None
-        else:
-            q = [alpha, 0.5, 1 - alpha]
-
-        if covars is None:
-            # No covariables in the dataset or provided as arguments.
-            # This will fail if covariables are necessary to go through the
-            # network. The error won't be nice, so it will be better to catch
-            # that. TODO
-            if q is None:
-                return self._effect_no_covars(x)
-            else:
-                return torch.hstack([
-                    self._effect_no_covars(x, tau).reshape(-1, 1)
-                    for tau in q
-                ])
-
-        else:
-            if q is None:
-                return self._effect_covars(x, covars)
-
-            return torch.hstack([
-                self._effect_covars(x, covars, tau).reshape(-1, 1)
-                for tau in q
-            ])
 
     def effect(
         self, x: torch.Tensor, covars: Optional[torch.Tensor] = None
@@ -300,7 +241,10 @@ class QuantileIVEstimator(MREstimator):
         if x.ndim == 1:
             x = x.reshape(-1, 1)
 
-        return self.effect_with_prediction_interval(x, covars, None).flatten()
+        if covars is None or covars.numel() < 1:
+            return self._effect_no_covars(x)
+        else:
+            return self._effect_covars(x, covars)
 
     @classmethod
     def from_results(cls, dir_name: str) -> "QuantileIVEstimator":
@@ -313,7 +257,82 @@ class QuantileIVEstimator(MREstimator):
             exposure_network=exposure_network
         )
 
+        if outcome_network.hparams.sqr:  # type: ignore
+            return QuantileIVEstimatorWithUncertainty(
+                exposure_network,
+                outcome_network
+            )
+
         return cls(exposure_network, outcome_network)
+
+
+class QuantileIVEstimatorWithUncertainty(
+    QuantileIVEstimator,
+    MREstimatorWithUncertainty
+):
+    def __init__(
+        self,
+        exposure_network: ExposureQuantileMLP,
+        outcome_network: OutcomeMLP,
+        alpha: float = 0.1
+    ):
+        self.exposure_network = exposure_network
+        self.outcome_network = outcome_network
+        self.alpha = alpha
+
+    @torch.no_grad()
+    def _effect_no_covars_unc(
+        self,
+        x: torch.Tensor,
+        tau: float
+    ):
+        taus = torch.full((x.size(0), 1), tau)
+        return self.outcome_network.x_to_y(x, None, taus)
+
+    @torch.no_grad()
+    def _effect_covars_unc(
+        self,
+        x: torch.Tensor,
+        covars: torch.Tensor,
+        tau: float
+    ):
+        n_cov_rows = covars.size(0)
+        x_rep = torch.repeat_interleave(x, n_cov_rows, dim=0)
+        covars = covars.repeat(x.size(0), 1)
+
+        taus = torch.full((x_rep.size(0), 1), tau)
+        y_hats = self.outcome_network.x_to_y(x_rep, covars, taus)
+
+        means = torch.tensor(
+            [tens.mean() for tens in torch.split(y_hats, n_cov_rows)]
+        )
+
+        return means
+
+    def effect_with_prediction_interval(
+        self,
+        x: torch.Tensor,
+        covars: Optional[torch.Tensor] = None,
+        alpha: float = 0.05
+    ) -> torch.Tensor:
+        assert self.outcome_network.hparams.sqr  # type: ignore
+
+        if x.ndim == 1:
+            x = x.reshape(-1, 1)
+
+        q = [alpha, 0.5, 1 - alpha]
+
+        if covars is None:
+            return torch.hstack([
+                self._effect_no_covars_unc(x, tau).reshape(-1, 1)
+                for tau in q
+            ])
+
+        else:
+            return torch.hstack([
+                self._effect_covars_unc(x, covars, tau).reshape(-1, 1)
+                for tau in q
+            ])
 
 
 def main(args: argparse.Namespace) -> None:
@@ -588,7 +607,12 @@ def fit_quantile_iv(
         exposure_network=exposure_network,
     ).eval()  # type: ignore
 
-    estimator = QuantileIVEstimator(exposure_network, outcome_network)
+    if sqr:
+        estimator: QuantileIVEstimator = QuantileIVEstimatorWithUncertainty(
+            exposure_network, outcome_network, alpha=0.1
+        )
+    else:
+        estimator = QuantileIVEstimator(exposure_network, outcome_network)
 
     save_estimator_statistics(
         estimator,
@@ -673,13 +697,14 @@ def save_estimator_statistics(
     xs = torch.linspace(domain[0], domain[1], 1000)
 
     if estimator.outcome_network.hparams.sqr and alpha:  # type: ignore
+        assert isinstance(estimator, QuantileIVEstimatorWithUncertainty)
         ys = estimator.effect_with_prediction_interval(xs, covars, alpha=alpha)
         df = pd.DataFrame(
             torch.hstack((xs.reshape(-1, 1), ys)).numpy(),
             columns=["x", "y_do_x_lower", "y_do_x", "y_do_x_upper"]
         )
     else:
-        ys = estimator.effect(xs, covars)
+        ys = estimator.effect(xs, covars).reshape(-1)
         df = pd.DataFrame({"x": xs, "y_do_x": ys})
 
     plt.figure()
