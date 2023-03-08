@@ -5,7 +5,6 @@ Command-line interface entry-point for all tasks related to model evaluation.
 #     --input path \
 #     --model bin_iv \
 #     --true-function 'my_file.py:true_function' \
-#     --metric mse  # Only supported option for now.
 
 """
 
@@ -18,7 +17,7 @@ import torch
 import numpy as np
 
 from ..estimation import MODELS, MREstimator, MREstimatorWithUncertainty
-from . import mse
+from .metrics import mse, mean_prediction_interval_absolute_width
 
 
 def parse_args(argv):
@@ -150,7 +149,15 @@ def main():
         estimator, true_function, domain=(domain_lower, domain_upper)
     )
 
-    print(cur_mse)
+    print(cur_mse, end="")
+
+    if isinstance(estimator, MREstimatorWithUncertainty):
+        width = mean_prediction_interval_absolute_width(
+            estimator, [domain_lower, domain_upper], 0.1
+        )
+        print(f",{width}", end="")
+
+    print()
 
     if args.plot:
         plot(estimator, true_function, domain=(domain_lower, domain_upper))

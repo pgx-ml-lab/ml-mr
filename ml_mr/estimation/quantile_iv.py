@@ -481,7 +481,7 @@ def train_outcome_model(
     accelerator: Optional[str] = None,
     sqr: bool = False,
     wandb_project: Optional[str] = None
-) -> None:
+) -> float:
     info("Training outcome model.")
     n_covars = train_dataset[0][3].numel()
     model = OutcomeMLP(
@@ -519,6 +519,13 @@ def train_outcome_model(
             WandbLogger(name=run_name, project=project)
         ]
 
+    model_checkpoint = pl.callbacks.ModelCheckpoint(
+        filename="outcome_network",
+        dirpath=output_dir,
+        save_top_k=1,
+        monitor="outcome_val_loss",
+    )
+
     trainer = pl.Trainer(
         log_every_n_steps=1,
         max_epochs=max_epochs,
@@ -527,16 +534,16 @@ def train_outcome_model(
             pl.callbacks.EarlyStopping(
                 monitor="outcome_val_loss", patience=20
             ),
-            pl.callbacks.ModelCheckpoint(
-                filename="outcome_network",
-                dirpath=output_dir,
-                save_top_k=1,
-                monitor="outcome_val_loss",
-            ),
+            model_checkpoint,
         ],
         logger=logger
     )
     trainer.fit(model, train_dataloader, val_dataloader)
+
+    # Return the val loss.
+    score = model_checkpoint.best_model_score
+    assert isinstance(score, torch.Tensor)
+    return score.item()
 
 
 def fit_quantile_iv(
@@ -566,7 +573,8 @@ def fit_quantile_iv(
         os.makedirs(output_dir)
 
     # Metadata dictionary that will be saved alongside the results.
-    meta = {}
+    meta = locals()
+    del meta["dataset"]  # We don't serialize the dataset.
 
     covars = dataset.save_covariables(output_dir)
 
@@ -608,7 +616,7 @@ def fit_quantile_iv(
             ),
         )
 
-    train_outcome_model(
+    outcome_val_loss = train_outcome_model(
         train_dataset=train_dataset,
         val_dataset=val_dataset,
         exposure_network=exposure_network,
@@ -623,6 +631,8 @@ def fit_quantile_iv(
         sqr=sqr,
         wandb_project=wandb_project
     )
+
+    meta["outcome_val_loss"] = outcome_val_loss
 
     outcome_network = OutcomeMLP.load_from_checkpoint(
         os.path.join(output_dir, "outcome_network.ckpt"),
