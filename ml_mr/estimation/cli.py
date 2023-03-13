@@ -18,6 +18,11 @@ from .quantile_iv import (
     main as quantile_iv_main
 )
 
+from .deep_iv import (
+    configure_argparse as deep_iv_configure_argparse,
+    main as deep_iv_main
+)
+
 
 def main():
     """Entry point for the estimation module.
@@ -39,10 +44,15 @@ def main():
     quantile_iv_parser = algorithms.add_parser("quantile_iv")
     quantile_iv_configure_argparse(quantile_iv_parser)
 
+    deep_iv_parser = algorithms.add_parser("deep_iv")
+    deep_iv_configure_argparse(deep_iv_parser)
+
     args = parser.parse_args(sys.argv[2:])
     if args.algorithm == "bin_iv":
         bin_iv_main(args)
     elif args.algorithm == "quantile_iv":
         quantile_iv_main(args)
+    elif args.algorithm == "deep_iv":
+        deep_iv_main(args)
     else:
         raise ValueError("Invalid algorithm.")

@@ -8,13 +8,13 @@ import torch
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 
-from ..estimation.core import _IVDataset
+from ..estimation.core import IVDataset
 
 
 @torch.no_grad()
 def get_conformal_adjustment(
     model: pl.LightningModule,
-    dataset: _IVDataset,
+    dataset: IVDataset,
     alpha: float = 0.1
 ) -> float:
     n = len(dataset)

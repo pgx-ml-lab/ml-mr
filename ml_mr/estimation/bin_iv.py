@@ -27,7 +27,7 @@ from torchmetrics import ConfusionMatrix
 from ..logging import critical, info, warn
 from ..utils import MLP, temperature_scale, parse_project_and_run_name
 from ..utils.quantiles import quantile_loss
-from .core import MREstimator, IVDatasetWithGenotypes, _IVDataset
+from .core import MREstimator, IVDatasetWithGenotypes, IVDataset
 
 
 # Types and literal definitions.
@@ -396,8 +396,8 @@ class BinIVEstimator(MREstimator):
         return cls(exposure_network, outcome_network, binning)
 
 
-class BinIVDataset(_IVDataset):
-    def __init__(self, dataset: _IVDataset, binning: Binning):
+class BinIVDataset(IVDataset):
+    def __init__(self, dataset: IVDataset, binning: Binning):
         """Wraps an IVDataset to provide binned exposure."""
         self.dataset = dataset
         self.binning = binning

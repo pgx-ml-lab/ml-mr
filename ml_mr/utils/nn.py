@@ -11,6 +11,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .quantiles import quantile_loss
+
 
 def build_mlp(
     input_size: int,
@@ -160,3 +162,85 @@ class MLP(pl.LightningModule):
             f"--{prefix}add-input-batchnorm",
             action="store_true"
         )
+
+
+class OutcomeMLPBase(MLP):
+    def __init__(
+        self,
+        exposure_network: pl.LightningModule,
+        input_size: int,
+        hidden: Iterable[int],
+        lr: float,
+        weight_decay: float = 0,
+        sqr: bool = False,
+        add_input_layer_batchnorm: bool = False,
+        add_hidden_layer_batchnorm: bool = False,
+        activations: Iterable[nn.Module] = [nn.GELU()]
+    ):
+        super().__init__(
+            input_size=input_size if not sqr else input_size + 1,
+            hidden=hidden,
+            out=1,
+            add_input_layer_batchnorm=add_input_layer_batchnorm,
+            add_hidden_layer_batchnorm=add_hidden_layer_batchnorm,
+            activations=activations,
+            lr=lr,
+            weight_decay=weight_decay,
+            loss=F.mse_loss if not sqr else quantile_loss,  # type: ignore
+            _save_hyperparams=False,
+        )
+        self.exposure_network = exposure_network
+        self.save_hyperparameters(ignore=["exposure_network"])
+
+    def _step(self, batch, batch_index, log_prefix):
+        _, y, ivs, covars = batch
+
+        if self.hparams.sqr:
+            taus = torch.rand(ivs.size(0), 1, device=self.device)
+        else:
+            taus = None
+
+        y_hat = self.forward(ivs, covars, taus)
+
+        if self.hparams.sqr:
+            loss = self.loss(y_hat, y, taus)
+        else:
+            loss = self.loss(y_hat, y)
+
+        self.log(f"outcome_{log_prefix}_loss", loss)
+
+        return loss
+
+    def x_to_y(
+        self,
+        x: torch.Tensor,
+        covars: Optional[torch.Tensor],
+        taus: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        if taus is not None and not self.hparams.sqr:  # type: ignore
+            raise ValueError("Can't provide tau if SQR not enabled.")
+
+        stack = [x]
+
+        if covars is not None and covars.numel() > 0:
+            stack.append(covars)
+
+        if taus is None and self.hparams.sqr:  # type: ignore
+            # Predict median by default.
+            taus = torch.full((x.size(0), 1), 0.5)
+
+        if taus is not None:
+            stack.append(taus)
+
+        x = torch.hstack(stack)
+
+        return self.mlp(x)
+
+    def forward(  # type: ignore
+        self,
+        ivs: torch.Tensor,
+        covars: Optional[torch.Tensor],
+        taus: Optional[torch.Tensor] = None
+    ):
+        """Forward pass throught the exposure and outcome models."""
+        raise NotImplementedError()

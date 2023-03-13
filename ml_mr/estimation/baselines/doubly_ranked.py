@@ -45,7 +45,7 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 
 from ...logging import warn
-from ..core import _IVDataset, MREstimator
+from ..core import IVDataset, MREstimator
 
 
 class DoublyRankedEstimator(MREstimator):
@@ -110,7 +110,7 @@ def create_strata(
 
 
 def fit_doubly_ranked(
-    dataset: _IVDataset,
+    dataset: IVDataset,
     q: int = 10,
     output_dir: str = "doubly_ranked_results",
     no_plot: bool = False

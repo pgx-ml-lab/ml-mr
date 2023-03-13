@@ -94,7 +94,7 @@ class MREstimatorWithUncertainty(MREstimator):
         raise NotImplementedError()
 
 
-class _IVDataset(Dataset):
+class IVDataset(Dataset):
     """Dataset class for IV analysis.
 
     The batches contain exposure, outcome, IVs and covariables.
@@ -158,20 +158,20 @@ class _IVDataset(Dataset):
         outcome_col: str,
         iv_cols: Iterable[str],
         covariable_cols: Iterable[str] = []
-    ) -> "_IVDataset":
+    ) -> "IVDataset":
         exposure = torch.from_numpy(dataframe[exposure_col].values).float()
         outcome = torch.from_numpy(dataframe[outcome_col].values).float()
         ivs = torch.from_numpy(dataframe[iv_cols].values).float()
         covars = torch.from_numpy(dataframe[covariable_cols].values).float()
 
-        return _IVDataset(exposure, outcome, ivs, covars)
+        return IVDataset(exposure, outcome, ivs, covars)
 
     @staticmethod
-    def from_argparse_namespace(args: argparse.Namespace) -> "_IVDataset":
+    def from_argparse_namespace(args: argparse.Namespace) -> "IVDataset":
         data = pd.read_csv(
             args.data, sep=args.sep
         )
-        return _IVDataset.from_dataframe(
+        return IVDataset.from_dataframe(
             data,
             exposure_col=args.exposure,
             outcome_col=args.outcome,
@@ -233,7 +233,7 @@ class _IVDataset(Dataset):
         )
 
 
-class IVDatasetWithGenotypes(_IVDataset):
+class IVDatasetWithGenotypes(IVDataset):
     def __init__(
         self,
         genetic_dataset: PhenotypeGeneticDataset,
@@ -301,10 +301,10 @@ class IVDatasetWithGenotypes(_IVDataset):
         return self.genetic_dataset.exog[:, [self.exposure_index]]
 
     @staticmethod
-    def from_argparse_namespace(args: argparse.Namespace) -> _IVDataset:
+    def from_argparse_namespace(args: argparse.Namespace) -> IVDataset:
         # Defer to parent if no genetic data provided.
         if args.genotypes_backend is None:
-            return _IVDataset.from_argparse_namespace(args)
+            return IVDataset.from_argparse_namespace(args)
 
         # Read genotype data.
         backend_class = BACKENDS.get(
@@ -368,3 +368,23 @@ class IVDatasetWithGenotypes(_IVDataset):
             help="Column that contains the sample id. This is mandatory if "
             "genotypes are provided to enable joining.",
         )
+
+
+class SupervisedLearningWrapper(Dataset):
+    """Wraps an IVDataset for supervised learning.
+
+    This will yield pairs (IVs + covariables, exposure).
+
+    """
+    def __init__(self, dataset: IVDataset):
+        self.dataset = dataset
+
+    def n_exog(self):
+        return self.dataset.n_exog()
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        x, _, ivs, covars = self.dataset[idx]
+        return (torch.hstack([ivs, covars]), x)
+
+    def __len__(self):
+        return len(self.dataset)

@@ -6,7 +6,6 @@ distribution.
 import argparse
 import json
 import os
-import sys
 from typing import Iterable, List, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
@@ -14,16 +13,16 @@ import pandas as pd
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from pytorch_lightning.loggers.logger import Logger
 from torch.utils.data import DataLoader, Dataset, random_split
 
-from ..logging import critical, info
-from ..utils import MLP, parse_project_and_run_name
-from ..utils.quantiles import QuantileLossMulti, quantile_loss
+from ..logging import info
+from ..utils import parse_project_and_run_name, default_validate_args
+from ..utils.nn import MLP, OutcomeMLPBase
+from ..utils.quantiles import QuantileLossMulti
 from ..utils.conformal import get_conformal_adjustment
 from .core import (IVDatasetWithGenotypes, MREstimator,
-                   MREstimatorWithUncertainty, _IVDataset)
+                   MREstimatorWithUncertainty, IVDataset)
 
 # Default values definitions.
 # fmt: off
@@ -97,7 +96,7 @@ class ExposureQuantileMLP(MLP):
         return loss
 
 
-class OutcomeMLP(MLP):
+class OutcomeMLP(OutcomeMLPBase):
     def __init__(
         self,
         exposure_network: ExposureQuantileMLP,
@@ -111,63 +110,16 @@ class OutcomeMLP(MLP):
         activations: Iterable[nn.Module] = [nn.GELU()]
     ):
         super().__init__(
-            input_size=input_size if not sqr else input_size + 1,
+            exposure_network=exposure_network,
+            input_size=input_size,
             hidden=hidden,
-            out=1,
-            add_input_layer_batchnorm=add_input_layer_batchnorm,
-            add_hidden_layer_batchnorm=add_hidden_layer_batchnorm,
-            activations=activations,
             lr=lr,
             weight_decay=weight_decay,
-            loss=F.mse_loss if not sqr else quantile_loss,  # type: ignore
-            _save_hyperparams=False,
+            sqr=sqr,
+            add_input_layer_batchnorm=add_input_layer_batchnorm,
+            add_hidden_layer_batchnorm=add_hidden_layer_batchnorm,
+            activations=activations
         )
-        self.exposure_network = exposure_network
-        self.save_hyperparameters(ignore=["exposure_network"])
-
-    def _step(self, batch, batch_index, log_prefix):
-        _, y, ivs, covars = batch
-
-        if self.hparams.sqr:
-            taus = torch.rand(ivs.size(0), 1, device=self.device)
-        else:
-            taus = None
-
-        y_hat = self.forward(ivs, covars, taus)
-
-        if self.hparams.sqr:
-            loss = self.loss(y_hat, y, taus)
-        else:
-            loss = self.loss(y_hat, y)
-
-        self.log(f"outcome_{log_prefix}_loss", loss)
-
-        return loss
-
-    def x_to_y(
-        self,
-        x: torch.Tensor,
-        covars: Optional[torch.Tensor],
-        taus: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        if taus is not None and not self.hparams.sqr:  # type: ignore
-            raise ValueError("Can't provide tau if SQR not enabled.")
-
-        stack = [x]
-
-        if covars is not None and covars.numel() > 0:
-            stack.append(covars)
-
-        if taus is None and self.hparams.sqr:  # type: ignore
-            # Predict median by default.
-            taus = torch.full((x.size(0), 1), 0.5)
-
-        if taus is not None:
-            stack.append(taus)
-
-        x = torch.hstack(stack)
-
-        return self.mlp(x)
 
     def forward(  # type: ignore
         self,
@@ -356,7 +308,7 @@ class QuantileIVEstimatorWithUncertainty(
 
 def main(args: argparse.Namespace) -> None:
     """Command-line interface entry-point."""
-    validate_args(args)
+    default_validate_args(args)
 
     # Prepare train and validation datasets.
     # There is theoretically a little bit of leakage here because the histogram
@@ -375,25 +327,6 @@ def main(args: argparse.Namespace) -> None:
         wandb_project=args.wandb_project,
         **kwargs,
     )
-
-
-def validate_args(args: argparse.Namespace) -> None:
-    if args.genotypes_backend is not None and args.sample_id_col is None:
-        critical(
-            "When providing a genotypes dataset for the instrument, a "
-            "sample id column needs to be provided using --sample-id-col "
-            "so that the individuals can be matched between the genotypes "
-            "and data file."
-        )
-        sys.exit(1)
-
-    if args.validation_proportion < 0 or args.validation_proportion > 1:
-        critical("--validation-proportion should be between 0 and 1.")
-        sys.exit(1)
-
-    if args.genotypes_backend is None and len(args.instruments) == 0:
-        critical("No instruments provided.")
-        sys.exit(1)
 
 
 def train_exposure_model(
@@ -548,7 +481,7 @@ def train_outcome_model(
 
 def fit_quantile_iv(
     q: int,
-    dataset: _IVDataset,
+    dataset: IVDataset,
     output_dir: str = DEFAULTS["output_dir"],  # type: ignore
     validation_proportion: float = DEFAULTS["validation_proportion"],  # type: ignore # noqa: E501
     no_plot: bool = False,
