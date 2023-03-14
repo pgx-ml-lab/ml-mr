@@ -105,16 +105,16 @@ class MixtureDensityNetwork(pl.LightningModule):
         return -torch.mean(ll)
 
     @staticmethod
-    def sample_given_params(n_samples, pi, mu, sigma):
+    def sample_given_params(n_samples, pi, mu, sigma, device=None):
         cat = torch.distributions.Categorical(logits=pi)
         components = cat.sample().unsqueeze(1)
 
-        noise = torch.randn((mu.size(0), n_samples))
+        noise = torch.randn((mu.size(0), n_samples), device=device)
         return noise * sigma.gather(1, components) + mu.gather(1, components)
 
-    def sample(self, x, n_samples):
+    def sample(self, x, n_samples, device=None):
         pis, mus, sigmas = self.forward_parameters(x)
-        return self.sample_given_params(n_samples, pis, mus, sigmas)
+        return self.sample_given_params(n_samples, pis, mus, sigmas, device)
 
     def training_step(self, batch, batch_index):
         x, y = batch

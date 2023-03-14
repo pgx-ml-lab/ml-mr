@@ -540,6 +540,8 @@ def fit_quantile_iv(
         os.path.join(output_dir, "exposure_network.ckpt")
     ).eval()  # type: ignore
 
+    exposure_network.freeze()
+
     if not no_plot:
         plot_exposure_model(
             exposure_network,
