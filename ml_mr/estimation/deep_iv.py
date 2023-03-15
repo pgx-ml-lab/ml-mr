@@ -1,26 +1,28 @@
 
 import argparse
 import os
-from typing import Iterable, List, Optional, Union, Tuple
+from typing import Iterable, List, Optional, Tuple, Union
 
+import matplotlib.pyplot as plt
+import pandas as pd
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 from pytorch_lightning.loggers import Logger
 from torch.utils.data import DataLoader, Dataset, random_split
-import matplotlib.pyplot as plt
-import pandas as pd
 
 from ..logging import info
 from ..utils import (MixtureDensityNetwork, default_validate_args,
                      parse_project_and_run_name)
+from ..utils.conformal import OutcomeResidualPrediction
 from ..utils.nn import MLP, OutcomeMLPBase
-from .core import (IVDataset, IVDatasetWithGenotypes, MREstimator,
-                   SupervisedLearningWrapper)
+from .core import (IVDataset, IVDatasetWithGenotypes,
+                   MREstimatorWithUncertainty, SupervisedLearningWrapper)
 
 # Default values definitions.
 # fmt: off
 DEFAULTS = {
+    "alpha": 0.1,
     "n_gaussians": 5,
     "exposure_hidden": [128, 64],
     "outcome_hidden": [32, 16],
@@ -112,6 +114,14 @@ class OutcomeMLP(OutcomeMLPBase):
         )
         self.loss = DeepIVMSE()
 
+    def forward(self, x, covars, taus=None):
+        """Do not use this function for training."""
+        assert taus is None
+        stack = [x]
+        if covars is not None:
+            stack.append(covars)
+        return self.mlp(torch.hstack(stack))
+
     def _step(self, batch, batch_index, log_prefix):
         _, y, ivs, covars = batch
 
@@ -136,14 +146,18 @@ class OutcomeMLP(OutcomeMLPBase):
         return loss
 
 
-class DeepIVEstimator(MREstimator):
+class DeepIVEstimator(MREstimatorWithUncertainty):
     def __init__(
         self,
         exposure_network: MixtureDensityNetwork,
-        outcome_network: OutcomeMLP,
+        outcome_network: OutcomeResidualPrediction,
     ):
         self.exposure_network = exposure_network
         self.outcome_network = outcome_network
+
+    @property
+    def alpha(self):
+        return self.outcome_network.hparams.alpha  # type: ignore
 
     @classmethod
     def from_results(cls, dir_name: str) -> "DeepIVEstimator":
@@ -156,12 +170,33 @@ class DeepIVEstimator(MREstimator):
             exposure_network=exposure_network
         )
 
-        return cls(exposure_network, outcome_network)
+        outcome_network_calibrated = OutcomeResidualPrediction\
+            .load_from_checkpoint(
+                os.path.join(dir_name, "outcome_network_calibration.ckpt"),
+                wrapped_model=outcome_network
+            )
 
-    def effect(
-        self, x: torch.Tensor, covars: Optional[torch.Tensor] = None
+        return cls(exposure_network, outcome_network_calibrated)
+
+    def effect(self, x: torch.Tensor, covars: Optional[torch.Tensor] = None):
+        return self.effect_with_prediction_interval(
+            x,
+            covars,
+            alpha=self.alpha
+        )[:, 1]
+
+    def effect_with_prediction_interval(
+        self,
+        x: torch.Tensor,
+        covars: Optional[torch.Tensor] = None,
+        alpha: float = 0.05
     ) -> torch.Tensor:
         """Mean exposure to outcome effect at values of x."""
+        if alpha != self.alpha:
+            raise ValueError(
+                f"Only alpha={self.alpha} was estimated for this model."
+            )
+
         if x.ndim == 1:
             x = x.reshape(-1, 1)
 
@@ -362,13 +397,67 @@ def train_outcome_model(
     return score.item()
 
 
+def train_conformal_predictor(
+        train_dataset: Dataset,
+        val_dataset: Dataset,
+        outcome_network: OutcomeMLP,
+        alpha: float,
+        batch_size: int,
+        output_dir: str,
+        accelerator: str,
+):
+    n_covars = train_dataset[0][3].numel()
+    model = OutcomeResidualPrediction(
+        1 + n_covars, wrapped_model=outcome_network, alpha=alpha
+    )
+
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=0,
+    )
+
+    val_dataloader = DataLoader(
+        val_dataset, batch_size=len(val_dataset), num_workers=0  # type: ignore
+    )
+
+    full_filename = os.path.join(
+        output_dir, "outcome_network_calibration.ckpt"
+    )
+    if os.path.isfile(full_filename):
+        info(f"Removing file '{full_filename}'.")
+        os.remove(full_filename)
+
+    model_ckpt = pl.callbacks.ModelCheckpoint(
+        filename="outcome_network_calibration",
+        dirpath=output_dir,
+        save_top_k=1,
+        monitor="val_resid_pred_loss"
+    )
+
+    trainer = pl.Trainer(
+        log_every_n_steps=1,
+        max_epochs=200,
+        accelerator=accelerator,
+        callbacks=[
+            pl.callbacks.EarlyStopping(
+                monitor="val_resid_pred_loss", patience=20
+            ),
+            model_ckpt
+        ],
+    )
+
+    trainer.fit(model, train_dataloader, val_dataloader)
+
+
 def fit_deep_iv(
     dataset: IVDataset,
     n_gaussians: int = DEFAULTS["n_gaussians"],  # type: ignore
     output_dir: str = DEFAULTS["output_dir"],  # type: ignore
     validation_proportion: float = DEFAULTS["validation_proportion"],  # type: ignore # noqa: E501
     no_plot: bool = False,
-    sqr: bool = False,
+    alpha: float = DEFAULTS["alpha"],  # type: ignore
     exposure_hidden: List[int] = DEFAULTS["exposure_hidden"],  # type: ignore
     exposure_learning_rate: float = DEFAULTS["exposure_learning_rate"],  # type: ignore # noqa: E501
     exposure_weight_decay: float = DEFAULTS["exposure_weight_decay"],  # type: ignore # noqa: E501
@@ -403,21 +492,21 @@ def fit_deep_iv(
         dataset, [1 - validation_proportion, validation_proportion]
     )
 
-    # train_exposure_model(
-    #     train_dataset=train_dataset,
-    #     val_dataset=val_dataset,
-    #     input_size=dataset.n_exog(),
-    #     output_dir=output_dir,
-    #     hidden=exposure_hidden,
-    #     learning_rate=exposure_learning_rate,
-    #     weight_decay=exposure_weight_decay,
-    #     batch_size=exposure_batch_size,
-    #     add_input_batchnorm=exposure_add_input_batchnorm,
-    #     max_epochs=exposure_max_epochs,
-    #     n_gaussians=n_gaussians,
-    #     accelerator=accelerator,
-    #     wandb_project=wandb_project
-    # )
+    train_exposure_model(
+        train_dataset=train_dataset,
+        val_dataset=val_dataset,
+        input_size=dataset.n_exog(),
+        output_dir=output_dir,
+        hidden=exposure_hidden,
+        learning_rate=exposure_learning_rate,
+        weight_decay=exposure_weight_decay,
+        batch_size=exposure_batch_size,
+        add_input_batchnorm=exposure_add_input_batchnorm,
+        max_epochs=exposure_max_epochs,
+        n_gaussians=n_gaussians,
+        accelerator=accelerator,
+        wandb_project=wandb_project
+    )
 
     exposure_network = MixtureDensityNetwork.load_from_checkpoint(
         os.path.join(output_dir, "exposure_network.ckpt")
@@ -445,7 +534,25 @@ def fit_deep_iv(
         exposure_network=exposure_network,
     ).eval()  # type: ignore
 
-    estimator = DeepIVEstimator(exposure_network, outcome_network)
+    outcome_network.freeze()
+
+    # Train the conformal predictor.
+    train_conformal_predictor(
+        train_dataset=train_dataset,
+        val_dataset=val_dataset,
+        outcome_network=outcome_network,
+        alpha=alpha,
+        batch_size=outcome_batch_size,
+        output_dir=output_dir,
+        accelerator=accelerator
+    )
+
+    outcome_network_calib = OutcomeResidualPrediction.load_from_checkpoint(
+        os.path.join(output_dir, "outcome_network_calibration.ckpt"),
+        wrapped_model=outcome_network
+    )
+
+    estimator = DeepIVEstimator(exposure_network, outcome_network_calib)
 
     save_estimator_statistics(
         estimator, covars, domain=domain,
@@ -470,15 +577,33 @@ def save_estimator_statistics(
     covars: Optional[torch.Tensor],
     domain: Tuple[float, float],
     output_prefix: str = "causal_estimates",
-    alpha: Optional[float] = None
 ):
     # Save the causal effect at over the domain.
     xs = torch.linspace(domain[0], domain[1], 1000)
-    ys = estimator.effect(xs, covars).reshape(-1)
-    df = pd.DataFrame({"x": xs, "y_do_x": ys})
+    preds = estimator.effect_with_prediction_interval(
+        xs, covars, alpha=estimator.alpha
+    )
+    df = pd.DataFrame({
+        "x": xs,
+        "y_do_x_lower": preds[:, 0],
+        "y_do_x": preds[:, 1],
+        "y_do_x_upper": preds[:, 2],
+    })
 
     plt.figure()
     plt.scatter(df["x"], df["y_do_x"], label="Estimated Y | do(X=x)", s=3)
+
+    if "y_do_x_lower" in df.columns:
+        # Add the CI on the plot.
+        plt.fill_between(
+            df["x"],
+            df["y_do_x_lower"],
+            df["y_do_x_upper"],
+            color="#dddddd",
+            zorder=-1,
+            label=f"{int((1 - estimator.alpha) * 100)}% Prediction interval"
+        )
+
     plt.xlabel("X")
     plt.ylabel("Y")
     plt.legend()
@@ -504,12 +629,12 @@ def configure_argparse(parser) -> None:
         action="store_true",
     )
 
-    # parser.add_argument(
-    #     "--sqr",
-    #     help="Enable simultaneous quantile regression to estimate a "
-    #     "prediction interval.",
-    #     action="store_true"
-    # )
+    parser.add_argument(
+        "--alpha",
+        help="Miscoverage level for the prediction interval.",
+        type=float,
+        default=DEFAULTS["alpha"]
+    )
 
     parser.add_argument(
         "--outcome-type",

@@ -20,7 +20,7 @@ from ..logging import info
 from ..utils import parse_project_and_run_name, default_validate_args
 from ..utils.nn import MLP, OutcomeMLPBase
 from ..utils.quantiles import QuantileLossMulti
-from ..utils.conformal import get_conformal_adjustment
+from ..utils.conformal import get_conformal_adjustment_sqr
 from .core import (IVDatasetWithGenotypes, MREstimator,
                    MREstimatorWithUncertainty, IVDataset)
 
@@ -576,7 +576,7 @@ def fit_quantile_iv(
 
     if sqr:
         # Conformal prediction.
-        q_hat = get_conformal_adjustment(
+        q_hat = get_conformal_adjustment_sqr(
             outcome_network, val_dataset, alpha=0.1  # type: ignore
         )
         info(f"Conformal adjustment estimated at q_hat={q_hat}.")

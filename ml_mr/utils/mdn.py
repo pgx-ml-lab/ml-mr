@@ -62,7 +62,7 @@ class MixtureDensityNetwork(pl.LightningModule):
         pi = self.pi(rep)
         mu = self.mu(rep)
         log_sigma = self.log_sigma(rep)
-        sigma = nn.ELU()(log_sigma) + 1 + EPS
+        sigma = F.softplus(log_sigma) + EPS
 
         return pi, mu, sigma
 
