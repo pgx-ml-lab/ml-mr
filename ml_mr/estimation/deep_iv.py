@@ -1,6 +1,7 @@
 
 import argparse
 import os
+import json
 from typing import Iterable, List, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
@@ -16,6 +17,7 @@ from ..utils import (MixtureDensityNetwork, default_validate_args,
                      parse_project_and_run_name)
 from ..utils.conformal import OutcomeResidualPrediction
 from ..utils.nn import MLP, OutcomeMLPBase
+from ..utils.training import train_model
 from .core import (IVDataset, IVDatasetWithGenotypes,
                    MREstimatorWithUncertainty, SupervisedLearningWrapper)
 
@@ -262,6 +264,7 @@ def train_exposure_model(
     accelerator: Optional[str] = None,
     wandb_project: Optional[str] = None
 ) -> None:
+    info("Training exposure model.")
     model = MixtureDensityNetwork(
         input_size=input_size,
         hidden=hidden,
@@ -272,52 +275,18 @@ def train_exposure_model(
         add_hidden_layer_batchnorm=True
     )
 
-    # Wrap datasets for supervised learning.
-    train_dataset = SupervisedLearningWrapper(train_dataset)  # type: ignore
-    val_dataset = SupervisedLearningWrapper(val_dataset)  # type: ignore
-
-    train_dataloader = DataLoader(
-        train_dataset,
+    return train_model(
+        SupervisedLearningWrapper(train_dataset),
+        SupervisedLearningWrapper(val_dataset),
+        model,
+        monitored_metric="mdn_val_nll",
+        output_dir=output_dir,
+        checkpoint_filename="exposure_network.ckpt",
         batch_size=batch_size,
-        shuffle=True,
-        num_workers=0
-    )
-
-    assert hasattr(val_dataset, "__len__")
-    val_dataloader = DataLoader(val_dataset, batch_size=len(val_dataset))
-
-    # Remove checkpoint if exists.
-    full_filename = os.path.join(output_dir, "exposure_network.ckpt")
-    if os.path.isfile(full_filename):
-        info(f"Removing file '{full_filename}'.")
-        os.remove(full_filename)
-
-    logger: Union[bool, Iterable[Logger]] = True
-    if wandb_project is not None:
-        from pytorch_lightning.loggers.wandb import WandbLogger
-        project, run_name = parse_project_and_run_name(wandb_project)
-        logger = [
-            WandbLogger(name=run_name, project=project)
-        ]
-
-    trainer = pl.Trainer(
-        log_every_n_steps=1,
         max_epochs=max_epochs,
         accelerator=accelerator,
-        callbacks=[
-            pl.callbacks.EarlyStopping(
-                monitor="mdn_val_nll", patience=20
-            ),
-            pl.callbacks.ModelCheckpoint(
-                filename="exposure_network",
-                dirpath=output_dir,
-                save_top_k=1,
-                monitor="mdn_val_nll",
-            ),
-        ],
-        logger=logger
+        wandb_project=wandb_project
     )
-    trainer.fit(model, train_dataloader, val_dataloader)
 
 
 def train_outcome_model(
@@ -345,110 +314,46 @@ def train_outcome_model(
         add_input_layer_batchnorm=add_input_batchnorm,
     )
 
-    train_dataloader = DataLoader(
+    return train_model(
         train_dataset,
+        val_dataset,
+        model,
+        monitored_metric="outcome_val_loss",
+        output_dir=output_dir,
+        checkpoint_filename="outcome_network.ckpt",
         batch_size=batch_size,
-        shuffle=True,
-        num_workers=0,
-    )
-
-    val_dataloader = DataLoader(
-        val_dataset, batch_size=len(val_dataset), num_workers=0  # type: ignore
-    )
-
-    # Remove checkpoint if exists.
-    full_filename = os.path.join(output_dir, "outcome_network.ckpt")
-    if os.path.isfile(full_filename):
-        info(f"Removing file '{full_filename}'.")
-        os.remove(full_filename)
-
-    logger: Union[bool, Iterable[Logger]] = True
-    if wandb_project is not None:
-        from pytorch_lightning.loggers.wandb import WandbLogger
-        project, run_name = parse_project_and_run_name(wandb_project)
-        logger = [
-            WandbLogger(name=run_name, project=project)
-        ]
-
-    model_checkpoint = pl.callbacks.ModelCheckpoint(
-        filename="outcome_network",
-        dirpath=output_dir,
-        save_top_k=1,
-        monitor="outcome_val_loss",
-    )
-
-    trainer = pl.Trainer(
-        log_every_n_steps=1,
         max_epochs=max_epochs,
         accelerator=accelerator,
-        callbacks=[
-            pl.callbacks.EarlyStopping(
-                monitor="outcome_val_loss", patience=20
-            ),
-            model_checkpoint,
-        ],
-        logger=logger
+        wandb_project=wandb_project
     )
-    trainer.fit(model, train_dataloader, val_dataloader)
-
-    # Return the val loss.
-    score = model_checkpoint.best_model_score
-    assert isinstance(score, torch.Tensor)
-    return score.item()
 
 
 def train_conformal_predictor(
-        train_dataset: Dataset,
-        val_dataset: Dataset,
-        outcome_network: OutcomeMLP,
-        alpha: float,
-        batch_size: int,
-        output_dir: str,
-        accelerator: str,
+    train_dataset: Dataset,
+    val_dataset: Dataset,
+    outcome_network: OutcomeMLP,
+    alpha: float,
+    batch_size: int,
+    output_dir: str,
+    accelerator: str,
 ):
     n_covars = train_dataset[0][3].numel()
     model = OutcomeResidualPrediction(
         1 + n_covars, wrapped_model=outcome_network, alpha=alpha
     )
 
-    train_dataloader = DataLoader(
+    return train_model(
         train_dataset,
+        val_dataset,
+        model,
+        monitored_metric="val_resid_pred_loss",
+        output_dir=output_dir,
+        checkpoint_filename="outcome_network_calibration.ckpt",
         batch_size=batch_size,
-        shuffle=True,
-        num_workers=0,
-    )
-
-    val_dataloader = DataLoader(
-        val_dataset, batch_size=len(val_dataset), num_workers=0  # type: ignore
-    )
-
-    full_filename = os.path.join(
-        output_dir, "outcome_network_calibration.ckpt"
-    )
-    if os.path.isfile(full_filename):
-        info(f"Removing file '{full_filename}'.")
-        os.remove(full_filename)
-
-    model_ckpt = pl.callbacks.ModelCheckpoint(
-        filename="outcome_network_calibration",
-        dirpath=output_dir,
-        save_top_k=1,
-        monitor="val_resid_pred_loss"
-    )
-
-    trainer = pl.Trainer(
-        log_every_n_steps=1,
-        max_epochs=200,
+        max_epochs=100,
         accelerator=accelerator,
-        callbacks=[
-            pl.callbacks.EarlyStopping(
-                monitor="val_resid_pred_loss", patience=20
-            ),
-            model_ckpt
-        ],
+        wandb_project=None,
     )
-
-    trainer.fit(model, train_dataloader, val_dataloader)
 
 
 def fit_deep_iv(
@@ -529,6 +434,8 @@ def fit_deep_iv(
         wandb_project=wandb_project
     )
 
+    meta["outcome_val_loss"] = outcome_val_loss
+
     outcome_network = OutcomeMLP.load_from_checkpoint(
         os.path.join(output_dir, "outcome_network.ckpt"),
         exposure_network=exposure_network,
@@ -553,6 +460,9 @@ def fit_deep_iv(
     )
 
     estimator = DeepIVEstimator(exposure_network, outcome_network_calib)
+
+    with open(os.path.join(output_dir, "meta.json"), "wt") as f:
+        json.dump(meta, f)
 
     save_estimator_statistics(
         estimator, covars, domain=domain,
