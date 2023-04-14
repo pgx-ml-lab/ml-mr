@@ -12,6 +12,9 @@ from pytorch_genotypes.dataset import (BACKENDS, GeneticDatasetBackend,
 from scipy.interpolate import interp1d
 from torch.utils.data import Dataset
 
+from ..logging import warn
+
+
 INTERPOLATION = ["linear", "quadratic", "cubic"]
 Interpolation = Literal["linear", "quadratic", "cubic"]
 InterpolationCallable = Callable[[torch.Tensor], torch.Tensor]
@@ -159,6 +162,21 @@ class IVDataset(Dataset):
         iv_cols: Iterable[str],
         covariable_cols: Iterable[str] = []
     ) -> "IVDataset":
+        # We'll do complete case analysis if the user provides a df with NAs.
+        keep_cols = list(itertools.chain(
+            [exposure_col, outcome_col], iv_cols, covariable_cols
+        ))
+        dataframe = dataframe[keep_cols]
+        if dataframe.isna().values.any():
+            n_before = dataframe.shape[0]
+            dataframe = dataframe.dropna()
+            n_after = dataframe.shape[0]
+            n = n_before - n_after
+            warn(
+                f"Doing complete case analysis. Dropped {n} rows with missing"
+                f"values from the input data."
+            )
+
         exposure = torch.from_numpy(dataframe[exposure_col].values).float()
         outcome = torch.from_numpy(dataframe[outcome_col].values).float()
         ivs = torch.from_numpy(dataframe[iv_cols].values).float()
