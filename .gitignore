@@ -1,6 +1,7 @@
 .vscode
 simulation_models/tian_biorxiv_2022/simulated_datasets/*
 simulation_models/tian_biorxiv_2022/results/*
+private
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
