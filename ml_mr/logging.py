@@ -14,3 +14,7 @@ def critical(message):
 
 def info(message):
     print(message)
+
+
+def debug(message):
+    print(f"[DEBUG] {message}", file=sys.stderr)

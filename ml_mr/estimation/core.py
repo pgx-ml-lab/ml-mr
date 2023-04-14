@@ -12,6 +12,8 @@ from pytorch_genotypes.dataset import (BACKENDS, GeneticDatasetBackend,
 from scipy.interpolate import interp1d
 from torch.utils.data import Dataset
 
+from ..logging import debug
+
 INTERPOLATION = ["linear", "quadratic", "cubic"]
 Interpolation = Literal["linear", "quadratic", "cubic"]
 InterpolationCallable = Callable[[torch.Tensor], torch.Tensor]
@@ -82,6 +84,61 @@ class MREstimator(object):
 
         """
         raise NotImplementedError()
+
+    @staticmethod
+    def average_treatment_effect_at_x(
+        x: float,
+        covars: Optional[torch.Tensor],
+        x_to_y: Callable[[torch.Tensor, Optional[torch.Tensor]], torch.Tensor],
+    ):
+        xs = torch.full(covars.size(0), x)
+        return torch.mean(x_to_y(xs, covars))
+
+    @classmethod
+    def average_treatment_effect(
+        cls,
+        x: torch.Tensor,
+        covars: Optional[torch.Tensor],
+        x_to_y: Callable[[torch.Tensor, Optional[torch.Tensor]], torch.Tensor],
+    ):
+        """Compute the average treatment effect for a set of X values.
+
+        For models that include covariates (exogenous variables), we get the
+        network predicted value at every specified covariate value while
+        fixing X and average the predicted values to get the ATE.
+
+        """
+        if covars is None or covars.numel() < 1:
+            with torch.no_grad():
+                return x_to_y(x, None)
+
+        # Check how much memory it would require to do it in one chunk.
+        mem = x.size(0) * covars.numel() * covars.element_size()
+        # If it would take more than 8GB, we'll do it iteratively.
+        debug(f"Batch ATE computation would require {mem} bytes.")
+        if mem >= 8e9:
+            ates = []
+            for cur_x in x:
+                ate = cls.average_treatment_effect_at_x(
+                    cur_x, covars, x_to_y
+                )
+                ates.append(ate)
+
+            return torch.tensor(ates)
+
+        covars_n = covars.size(0)
+
+        x_rep = torch.repeat_interleave(x, covars_n, dim=0)
+        covars = covars.repeat(x.size(0), 1)
+
+        with torch.no_grad():
+            y_hats = x_to_y(x_rep, covars)
+
+        means = torch.tensor(
+            [tens.mean() for tens in torch.split(y_hats, covars_n)]
+        )
+
+        return means
 
 
 class MREstimatorWithUncertainty(MREstimator):

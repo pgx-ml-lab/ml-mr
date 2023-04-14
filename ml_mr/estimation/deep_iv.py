@@ -2,15 +2,13 @@
 import argparse
 import os
 import json
-from typing import Iterable, List, Optional, Tuple, Union
+from typing import Iterable, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import pandas as pd
-import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-from pytorch_lightning.loggers import Logger
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import Dataset, random_split
 
 from ..logging import info
 from ..utils import (MixtureDensityNetwork, default_validate_args,
@@ -202,35 +200,9 @@ class DeepIVEstimator(MREstimatorWithUncertainty):
         if x.ndim == 1:
             x = x.reshape(-1, 1)
 
-        if covars is None or covars.numel() < 1:
-            return self._effect_no_covars(x)
-        else:
-            return self._effect_covars(x, covars)
-
-    @torch.no_grad()
-    def _effect_no_covars(
-        self,
-        x: torch.Tensor,
-    ):
-        return self.outcome_network.x_to_y(x, None)
-
-    @torch.no_grad()
-    def _effect_covars(
-        self,
-        x: torch.Tensor,
-        covars: torch.Tensor,
-    ):
-        n_cov_rows = covars.size(0)
-        x_rep = torch.repeat_interleave(x, n_cov_rows, dim=0)
-        covars = covars.repeat(x.size(0), 1)
-
-        y_hats = self.outcome_network.x_to_y(x_rep, covars)
-
-        means = torch.tensor(
-            [tens.mean() for tens in torch.split(y_hats, n_cov_rows)]
+        return self.average_treatment_effect(
+            x, covars, self.outcome_network.x_to_y
         )
-
-        return means
 
 
 def main(args: argparse.Namespace) -> None:

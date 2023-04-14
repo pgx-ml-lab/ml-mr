@@ -3,6 +3,7 @@ Implementation of an IV method based on estimating quantiles of the exposure
 distribution.
 """
 
+import functools
 import argparse
 import json
 import os
@@ -21,6 +22,7 @@ from ..utils import parse_project_and_run_name, default_validate_args
 from ..utils.nn import MLP, OutcomeMLPBase
 from ..utils.quantiles import QuantileLossMulti
 from ..utils.conformal import get_conformal_adjustment_sqr
+from ..utils.training import train_model
 from .core import (IVDatasetWithGenotypes, MREstimator,
                    MREstimatorWithUncertainty, IVDataset)
 
@@ -163,31 +165,6 @@ class QuantileIVEstimator(MREstimator):
         self.exposure_network = exposure_network
         self.outcome_network = outcome_network
 
-    @torch.no_grad()
-    def _effect_no_covars(
-        self,
-        x: torch.Tensor,
-    ):
-        return self.outcome_network.x_to_y(x, None)
-
-    @torch.no_grad()
-    def _effect_covars(
-        self,
-        x: torch.Tensor,
-        covars: torch.Tensor,
-    ):
-        n_cov_rows = covars.size(0)
-        x_rep = torch.repeat_interleave(x, n_cov_rows, dim=0)
-        covars = covars.repeat(x.size(0), 1)
-
-        y_hats = self.outcome_network.x_to_y(x_rep, covars)
-
-        means = torch.tensor(
-            [tens.mean() for tens in torch.split(y_hats, n_cov_rows)]
-        )
-
-        return means
-
     def effect(
         self, x: torch.Tensor, covars: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
@@ -195,10 +172,9 @@ class QuantileIVEstimator(MREstimator):
         if x.ndim == 1:
             x = x.reshape(-1, 1)
 
-        if covars is None or covars.numel() < 1:
-            return self._effect_no_covars(x)
-        else:
-            return self._effect_covars(x, covars)
+        return self.average_treatment_effect(
+            x, covars, self.outcome_network.x_to_y
+        )
 
     @classmethod
     def from_results(cls, dir_name: str) -> "QuantileIVEstimator":
@@ -244,35 +220,6 @@ class QuantileIVEstimatorWithUncertainty(
         # Conformal prediction adjustment.
         self.q_hat = q_hat
 
-    @torch.no_grad()
-    def _effect_no_covars_unc(
-        self,
-        x: torch.Tensor,
-        tau: float
-    ):
-        taus = torch.full((x.size(0), 1), tau)
-        return self.outcome_network.x_to_y(x, None, taus)
-
-    @torch.no_grad()
-    def _effect_covars_unc(
-        self,
-        x: torch.Tensor,
-        covars: torch.Tensor,
-        tau: float
-    ):
-        n_cov_rows = covars.size(0)
-        x_rep = torch.repeat_interleave(x, n_cov_rows, dim=0)
-        covars = covars.repeat(x.size(0), 1)
-
-        taus = torch.full((x_rep.size(0), 1), tau)
-        y_hats = self.outcome_network.x_to_y(x_rep, covars, taus)
-
-        means = torch.tensor(
-            [tens.mean() for tens in torch.split(y_hats, n_cov_rows)]
-        )
-
-        return means
-
     def effect_with_prediction_interval(
         self,
         x: torch.Tensor,
@@ -286,24 +233,20 @@ class QuantileIVEstimatorWithUncertainty(
 
         q = [alpha, 0.5, 1 - alpha]
 
-        if covars is None:
-            pred = torch.hstack([
-                self._effect_no_covars_unc(x, tau).reshape(-1, 1)
-                for tau in q
-            ])
+        pred = []
+        for tau in q:
+            taus = torch.full((x.size(0), 1), tau)
+            x_to_y = functools.partial(self.outcome_network.x_to_y, taus=taus)
+            pred.append(self.average_treatment_effect(x, covars, x_to_y))
 
-        else:
-            pred = torch.hstack([
-                self._effect_covars_unc(x, covars, tau).reshape(-1, 1)
-                for tau in q
-            ])
+        pred = torch.hstack(pred)
 
         # Conformal prediction adjustment if set.
         conformal_adj = [-self.q_hat, 0, self.q_hat]
         for j in range(3):
             pred[:, j] = pred[:, j] + conformal_adj[j]
 
-        return pred
+        return pred.detach()
 
 
 def main(args: argparse.Namespace) -> None:
@@ -355,49 +298,18 @@ def train_exposure_model(
         add_hidden_layer_batchnorm=True,
     )
 
-    train_dataloader = DataLoader(
+    return train_model(
         train_dataset,
+        val_dataset,
+        model=model,
+        monitored_metric="exposure_val_loss",
+        output_dir=output_dir,
+        checkpoint_filename="exposure_network.ckpt",
         batch_size=batch_size,
-        shuffle=True,
-        num_workers=0,
-    )
-
-    val_dataloader = DataLoader(
-        val_dataset, batch_size=len(val_dataset), num_workers=0  # type: ignore
-    )
-
-    # Remove checkpoint if exists.
-    full_filename = os.path.join(output_dir, "exposure_network.ckpt")
-    if os.path.isfile(full_filename):
-        info(f"Removing file '{full_filename}'.")
-        os.remove(full_filename)
-
-    logger: Union[bool, Iterable[Logger]] = True
-    if wandb_project is not None:
-        from pytorch_lightning.loggers.wandb import WandbLogger
-        project, run_name = parse_project_and_run_name(wandb_project)
-        logger = [
-            WandbLogger(name=run_name, project=project)
-        ]
-
-    trainer = pl.Trainer(
-        log_every_n_steps=1,
         max_epochs=max_epochs,
         accelerator=accelerator,
-        callbacks=[
-            pl.callbacks.EarlyStopping(
-                monitor="exposure_val_loss", patience=20
-            ),
-            pl.callbacks.ModelCheckpoint(
-                filename="exposure_network",
-                dirpath=output_dir,
-                save_top_k=1,
-                monitor="exposure_val_loss",
-            ),
-        ],
-        logger=logger
+        wandb_project=wandb_project
     )
-    trainer.fit(model, train_dataloader, val_dataloader)
 
 
 def train_outcome_model(
@@ -427,56 +339,18 @@ def train_outcome_model(
         sqr=sqr
     )
 
-    train_dataloader = DataLoader(
+    return train_model(
         train_dataset,
+        val_dataset,
+        model=model,
+        monitored_metric="outcome_val_loss",
+        output_dir=output_dir,
+        checkpoint_filename="outcome_network.ckpt",
         batch_size=batch_size,
-        shuffle=True,
-        num_workers=0,
-    )
-
-    val_dataloader = DataLoader(
-        val_dataset, batch_size=len(val_dataset), num_workers=0  # type: ignore
-    )
-
-    # Remove checkpoint if exists.
-    full_filename = os.path.join(output_dir, "outcome_network.ckpt")
-    if os.path.isfile(full_filename):
-        info(f"Removing file '{full_filename}'.")
-        os.remove(full_filename)
-
-    logger: Union[bool, Iterable[Logger]] = True
-    if wandb_project is not None:
-        from pytorch_lightning.loggers.wandb import WandbLogger
-        project, run_name = parse_project_and_run_name(wandb_project)
-        logger = [
-            WandbLogger(name=run_name, project=project)
-        ]
-
-    model_checkpoint = pl.callbacks.ModelCheckpoint(
-        filename="outcome_network",
-        dirpath=output_dir,
-        save_top_k=1,
-        monitor="outcome_val_loss",
-    )
-
-    trainer = pl.Trainer(
-        log_every_n_steps=1,
         max_epochs=max_epochs,
         accelerator=accelerator,
-        callbacks=[
-            pl.callbacks.EarlyStopping(
-                monitor="outcome_val_loss", patience=20
-            ),
-            model_checkpoint,
-        ],
-        logger=logger
+        wandb_project=wandb_project,
     )
-    trainer.fit(model, train_dataloader, val_dataloader)
-
-    # Return the val loss.
-    score = model_checkpoint.best_model_score
-    assert isinstance(score, torch.Tensor)
-    return score.item()
 
 
 def fit_quantile_iv(
