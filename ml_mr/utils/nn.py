@@ -1,10 +1,9 @@
 """
-General utilities to construct neural networks. Used across the project for
-causal effect estimation or for simulation, for example.
+Internal utilities to construct neural networks.
 """
 
 import argparse
-from typing import Optional, Iterable, List, Callable, Dict, Any
+from typing import Optional, Iterable, List, Callable, Dict, Any, Tuple
 
 import pytorch_lightning as pl
 import torch
@@ -44,12 +43,28 @@ def build_mlp(
     return layers
 
 
+class DensityModel(pl.LightningModule):
+    """Mixin for models that allow sampling.
+
+    For example, the Mixture Density Network and the Gaussian networks enable
+    sampling from conditional densities.
+
+    """
+    def sample(
+        self,
+        x: torch.Tensor,
+        n_samples: int,
+        device: Optional[torch.device] = None
+    ):
+        raise NotImplementedError()
+
+
 class MLP(pl.LightningModule):
     def __init__(
         self,
         input_size: int,
         hidden: Iterable[int],
-        out: int = 1,
+        out: Optional[int] = 1,
         add_input_layer_batchnorm: bool = False,
         add_hidden_layer_batchnorm: bool = False,
         activations: Iterable[nn.Module] = [nn.LeakyReLU()],
@@ -162,6 +177,70 @@ class MLP(pl.LightningModule):
             f"--{prefix}add-input-batchnorm",
             action="store_true"
         )
+
+
+class GaussianNet(MLP, DensityModel):
+    """MLP that outputs a mu and sigma and trains using the Gaussian NLL."""
+    def __init__(
+        self,
+        input_size: int,
+        hidden: Iterable[int],
+        add_input_layer_batchnorm: bool = False,
+        add_hidden_layer_batchnorm: bool = False,
+        activations: Iterable[nn.Module] = [nn.LeakyReLU()],
+
+        # Hyperparameters and training parameters.
+        lr: float = 1e-3,
+        weight_decay: float = 0,
+        _save_hyperparams: bool = True
+    ):
+        hidden = list(hidden)
+        super().__init__(
+            input_size,
+            hidden=hidden,
+            out=None,
+            add_input_layer_batchnorm=add_input_layer_batchnorm,
+            add_hidden_layer_batchnorm=add_hidden_layer_batchnorm,
+            activations=activations,
+            lr=lr,
+            weight_decay=weight_decay,
+            loss=F.gaussian_nll_loss,  # type: ignore
+            _save_hyperparams=_save_hyperparams
+        )
+
+        self.mu_head = nn.Linear(hidden[-1], 1)
+        self.sigma_head = nn.Linear(hidden[-1], 1)
+
+    def forward(self, x: torch.Tensor):
+        raise NotImplementedError()
+
+    def forward_parameters(
+        self,
+        x: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        z = self.mlp(x)
+        mu = self.mu_head(z)
+        sigma = F.softplus(self.sigma_head(z))
+        return mu, sigma
+
+    def sample(self, x, n_samples, device=None):
+        mu, sigma = self.forward_parameters(x)
+        return sigma * torch.randn(n_samples, device=device) + mu
+
+    def _step(
+        self,
+        batch,
+        batch_index,
+        log_prefix: str = "train"
+    ) -> torch.Tensor:
+        x, y = batch
+
+        mu, sigma = self.forward_parameters(x)
+        loss = self.loss(mu, y, sigma)  # type: ignore
+
+        self.log(f"{log_prefix}_loss", loss)
+
+        return loss
 
 
 class OutcomeMLPBase(MLP):

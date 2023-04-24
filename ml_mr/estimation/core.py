@@ -91,8 +91,11 @@ class MREstimator(object):
         covars: Optional[torch.Tensor],
         x_to_y: Callable[[torch.Tensor, Optional[torch.Tensor]], torch.Tensor],
     ):
-        xs = torch.full(covars.size(0), x)
-        return torch.mean(x_to_y(xs, covars))
+        if covars is not None and covars.numel() > 0:
+            xs = torch.full((covars.size(0), 1), x)
+            return torch.mean(x_to_y(xs, covars), dim=0)
+        else:
+            return x_to_y(torch.tensor([[x]]), None)
 
     @classmethod
     def average_treatment_effect(
@@ -114,18 +117,23 @@ class MREstimator(object):
 
         # Check how much memory it would require to do it in one chunk.
         mem = x.size(0) * covars.numel() * covars.element_size()
-        # If it would take more than 8GB, we'll do it iteratively.
-        debug(f"Batch ATE computation would require {mem} bytes.")
-        if mem >= 8e9:
+        debug(
+            f"Batch ATE computation would require {mem} bytes to store the "
+            f"input."
+        )
+        if mem >= 1e9:
+            debug("\tUsing iterative algorithm.")
             ates = []
             for cur_x in x:
-                ate = cls.average_treatment_effect_at_x(
-                    cur_x, covars, x_to_y
-                )
+                with torch.no_grad():
+                    ate = cls.average_treatment_effect_at_x(
+                        cur_x.item(), covars, x_to_y
+                    )
                 ates.append(ate)
 
-            return torch.tensor(ates)
+            return torch.vstack(ates)
 
+        debug("\tUsing batch algorithm.")
         covars_n = covars.size(0)
 
         x_rep = torch.repeat_interleave(x, covars_n, dim=0)
@@ -134,8 +142,8 @@ class MREstimator(object):
         with torch.no_grad():
             y_hats = x_to_y(x_rep, covars)
 
-        means = torch.tensor(
-            [tens.mean() for tens in torch.split(y_hats, covars_n)]
+        means = torch.vstack(
+            [tens.mean(dim=0) for tens in torch.split(y_hats, covars_n)]
         )
 
         return means

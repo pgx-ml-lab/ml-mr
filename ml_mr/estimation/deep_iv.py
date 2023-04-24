@@ -1,8 +1,8 @@
 
 import argparse
-import os
 import json
-from typing import Iterable, List, Optional, Tuple
+import os
+from typing import Iterable, List, Literal, Optional, Tuple, Dict, Type
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -11,19 +11,32 @@ import torch.nn as nn
 from torch.utils.data import Dataset, random_split
 
 from ..logging import info
-from ..utils import (MixtureDensityNetwork, default_validate_args,
-                     parse_project_and_run_name)
+from ..utils import default_validate_args, parse_project_and_run_name
 from ..utils.conformal import OutcomeResidualPrediction
-from ..utils.nn import MLP, OutcomeMLPBase
+from ..utils.models import (MLP, GaussianNet, MixtureDensityNetwork,
+                            OutcomeMLPBase)
+from ..utils.nn import DensityModel
 from ..utils.training import train_model
 from .core import (IVDataset, IVDatasetWithGenotypes,
                    MREstimatorWithUncertainty, SupervisedLearningWrapper)
+
+
+# Supported models for the exposure network.
+ExposureNetTypeKey = Literal["mixture_density_net", "gaussian_net", "ridge"]
+
+NET_TO_CLASS: Dict[ExposureNetTypeKey, Type[DensityModel]] = {
+    "mixture_density_net": MixtureDensityNetwork,
+    "gaussian_net": GaussianNet,
+    # "ridge": TODO
+}
+
 
 # Default values definitions.
 # fmt: off
 DEFAULTS = {
     "alpha": 0.1,
     "n_gaussians": 5,
+    "exposure_network_type": "mixture_density_net",
     "exposure_hidden": [128, 64],
     "outcome_hidden": [32, 16],
     "exposure_learning_rate": 5e-4,
@@ -92,7 +105,7 @@ class DeepIVMSE(nn.Module):
 class OutcomeMLP(OutcomeMLPBase):
     def __init__(
         self,
-        exposure_network: MixtureDensityNetwork,
+        exposure_network: DensityModel,
         input_size: int,
         hidden: Iterable[int],
         lr: float,
@@ -130,7 +143,7 @@ class OutcomeMLP(OutcomeMLPBase):
         )
 
         with torch.no_grad():
-            assert isinstance(self.exposure_network, MixtureDensityNetwork)
+            assert isinstance(self.exposure_network, DensityModel)
             x_samples = self.exposure_network.sample(
                 exposure_net_xs,
                 2,
@@ -149,7 +162,7 @@ class OutcomeMLP(OutcomeMLPBase):
 class DeepIVEstimator(MREstimatorWithUncertainty):
     def __init__(
         self,
-        exposure_network: MixtureDensityNetwork,
+        exposure_network: DensityModel,
         outcome_network: OutcomeResidualPrediction,
     ):
         self.exposure_network = exposure_network
@@ -161,7 +174,13 @@ class DeepIVEstimator(MREstimatorWithUncertainty):
 
     @classmethod
     def from_results(cls, dir_name: str) -> "DeepIVEstimator":
-        exposure_network = MixtureDensityNetwork.load_from_checkpoint(
+        with open(os.path.join(dir_name, "meta.json"), "rt") as f:
+            meta = json.load(f)
+
+        # Get the Exposure class.
+        ExposureNetCls = NET_TO_CLASS[meta["exposure_network_type"]]
+
+        exposure_network = ExposureNetCls.load_from_checkpoint(
             os.path.join(dir_name, "exposure_network.ckpt")
         )
 
@@ -175,6 +194,12 @@ class DeepIVEstimator(MREstimatorWithUncertainty):
                 os.path.join(dir_name, "outcome_network_calibration.ckpt"),
                 wrapped_model=outcome_network
             )
+
+        # Set the q_hat
+        with open(os.path.join(dir_name, "meta.json")) as f:
+            meta = json.load(f)
+
+        outcome_network_calibrated.q_hat = meta["q_hat"]  # type: ignore
 
         return cls(exposure_network, outcome_network_calibrated)
 
@@ -208,6 +233,9 @@ class DeepIVEstimator(MREstimatorWithUncertainty):
 def main(args: argparse.Namespace) -> None:
     default_validate_args(args)
 
+    if args.exposure_network_type != "mixture_density_net":
+        args.n_gaussians = None
+
     dataset = IVDatasetWithGenotypes.from_argparse_namespace(args)
 
     # Automatically add the model hyperparameters.
@@ -222,6 +250,7 @@ def main(args: argparse.Namespace) -> None:
 
 
 def train_exposure_model(
+    exposure_network_type: str,
     train_dataset: Dataset,
     val_dataset: Dataset,
     input_size: int,
@@ -237,21 +266,41 @@ def train_exposure_model(
     wandb_project: Optional[str] = None
 ) -> None:
     info("Training exposure model.")
-    model = MixtureDensityNetwork(
-        input_size=input_size,
-        hidden=hidden,
-        n_components=n_gaussians,
-        lr=learning_rate,
-        weight_decay=weight_decay,
-        add_input_layer_batchnorm=add_input_batchnorm,
-        add_hidden_layer_batchnorm=True
-    )
 
-    return train_model(
-        SupervisedLearningWrapper(train_dataset),
-        SupervisedLearningWrapper(val_dataset),
+    if exposure_network_type == "mixture_density_net":
+        info(
+            f"Using a Mixture Density Network with {n_gaussians} components "
+            f"as the exposure model."
+        )
+        model = MixtureDensityNetwork(
+            input_size=input_size,
+            hidden=hidden,
+            n_components=n_gaussians,
+            lr=learning_rate,
+            weight_decay=weight_decay,
+            add_input_layer_batchnorm=add_input_batchnorm,
+            add_hidden_layer_batchnorm=True
+        )
+        monitored_metric = "mdn_val_nll"
+
+    elif exposure_network_type == "gaussian_net":
+        info("Using a Gaussian NN for the exposure model.")
+        info("The requested number of gaussian components will be ignored.")
+        model = GaussianNet(
+            input_size=input_size,
+            hidden=hidden,
+            lr=learning_rate,
+            weight_decay=weight_decay,
+            add_input_layer_batchnorm=add_input_batchnorm,
+            add_hidden_layer_batchnorm=True
+        )
+        monitored_metric = "val_loss"
+
+    train_model(
+        SupervisedLearningWrapper(train_dataset),  # type: ignore
+        SupervisedLearningWrapper(val_dataset),  # type: ignore
         model,
-        monitored_metric="mdn_val_nll",
+        monitored_metric=monitored_metric,
         output_dir=output_dir,
         checkpoint_filename="exposure_network.ckpt",
         batch_size=batch_size,
@@ -314,7 +363,7 @@ def train_conformal_predictor(
         1 + n_covars, wrapped_model=outcome_network, alpha=alpha
     )
 
-    return train_model(
+    train_model(
         train_dataset,
         val_dataset,
         model,
@@ -330,6 +379,7 @@ def train_conformal_predictor(
 
 def fit_deep_iv(
     dataset: IVDataset,
+    exposure_network_type: ExposureNetTypeKey = DEFAULTS["exposure_network_type"],  # type: ignore # noqa: E501
     n_gaussians: int = DEFAULTS["n_gaussians"],  # type: ignore
     output_dir: str = DEFAULTS["output_dir"],  # type: ignore
     validation_proportion: float = DEFAULTS["validation_proportion"],  # type: ignore # noqa: E501
@@ -370,6 +420,7 @@ def fit_deep_iv(
     )
 
     train_exposure_model(
+        exposure_network_type=exposure_network_type,
         train_dataset=train_dataset,
         val_dataset=val_dataset,
         input_size=dataset.n_exog(),
@@ -385,9 +436,10 @@ def fit_deep_iv(
         wandb_project=wandb_project
     )
 
-    exposure_network = MixtureDensityNetwork.load_from_checkpoint(
-        os.path.join(output_dir, "exposure_network.ckpt")
-    ).eval()  # type: ignore
+    exposure_network = NET_TO_CLASS[exposure_network_type]\
+        .load_from_checkpoint(
+            os.path.join(output_dir, "exposure_network.ckpt")
+        ).eval()  # type: ignore
 
     exposure_network.freeze()
 
@@ -426,10 +478,16 @@ def fit_deep_iv(
         accelerator=accelerator
     )
 
-    outcome_network_calib = OutcomeResidualPrediction.load_from_checkpoint(
-        os.path.join(output_dir, "outcome_network_calibration.ckpt"),
-        wrapped_model=outcome_network
+    outcome_network_calib: OutcomeResidualPrediction = (
+        OutcomeResidualPrediction.load_from_checkpoint(
+            os.path.join(output_dir, "outcome_network_calibration.ckpt"),
+            wrapped_model=outcome_network
+        )
     )
+
+    outcome_network_calib.set_q_hat_from_data(val_dataset)
+    assert isinstance(outcome_network_calib.q_hat, torch.Tensor)
+    meta["q_hat"] = outcome_network_calib.q_hat.item()
 
     estimator = DeepIVEstimator(exposure_network, outcome_network_calib)
 
@@ -461,7 +519,7 @@ def save_estimator_statistics(
     output_prefix: str = "causal_estimates",
 ):
     # Save the causal effect at over the domain.
-    xs = torch.linspace(domain[0], domain[1], 1000)
+    xs = torch.linspace(domain[0], domain[1], 200)
     preds = estimator.effect_with_prediction_interval(
         xs, covars, alpha=estimator.alpha
     )
@@ -501,6 +559,14 @@ def configure_argparse(parser) -> None:
         type=int,
         help="Number of gaussians used for the mixture density network.",
         default=DEFAULTS["n_gaussians"]
+    )
+
+    parser.add_argument(
+        "--exposure-network-type",
+        type=str,
+        help="Density model for the exposure network.",
+        choices=["mixture_density_net", "gaussian_net"],
+        default=DEFAULTS["exposure_network_type"]
     )
 
     parser.add_argument("--output-dir", default=DEFAULTS["output_dir"])

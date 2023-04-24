@@ -2,7 +2,7 @@
 Utilities for conformal prediction.
 """
 
-from typing import Optional
+from typing import Optional, Union
 import math
 
 import torch
@@ -13,7 +13,6 @@ import pytorch_lightning as pl
 import numpy as np
 from ..estimation.core import IVDataset
 from .nn import MLP, OutcomeMLPBase
-from ..logging import info, warn
 
 
 @torch.no_grad()
@@ -55,11 +54,11 @@ class OutcomeResidualPrediction(MLP):
         self,
         input_size,
         wrapped_model: OutcomeMLPBase,
-        hidden=[32, 32],
+        hidden=[128, 64],
         alpha: float = 0.1,
-        q_hat: float = 1,
-        lr: float = 1e-3,
+        lr: float = 5e-3,
         weight_decay: float = 0,
+        q_hat: Optional[Union[float, torch.Tensor]] = None
     ):
         super().__init__(
             input_size,
@@ -70,15 +69,11 @@ class OutcomeResidualPrediction(MLP):
             _save_hyperparams=False
         )
 
-        self.register_buffer("q_hat", torch.tensor(q_hat))
         self.wrapped_model = wrapped_model
-        self.save_hyperparameters(ignore=["wrapped_model"])
+        self.q_hat = q_hat
+        self.save_hyperparameters(ignore=["wrapped_model", "q_hat"])
 
     def x_to_y(self, x: torch.Tensor, covars: Optional[torch.Tensor] = None):
-        if self.q_hat == 1:
-            warn("Observed a conformal adjustment of 1 which suggests that "
-                 "it was not set. Did you use conformal_calibration?")
-
         # Get prediction and resid.
         with torch.no_grad():
             y_hat = self.wrapped_model.forward(x, covars)
@@ -90,7 +85,7 @@ class OutcomeResidualPrediction(MLP):
             y_hat + pred_resid * self.q_hat
         ])
 
-    def on_validation_batch_start(self, batch, batch_idx, dataloader_idx):
+    def set_q_hat_from_data(self, dataset):
         """Set the conformal prediction multiplier.
 
         It is important to use full batches for the validation dataset,
@@ -98,7 +93,8 @@ class OutcomeResidualPrediction(MLP):
         not necessarily return calibrated predictions.
 
         """
-        x, y, _, covars = batch
+        dl = DataLoader(dataset, batch_size=len(dataset))
+        x, y, _, covars = next(iter(dl))
 
         n = x.size(0)
         alpha = self.hparams.alpha  # type: ignore

@@ -25,7 +25,8 @@ from torch.utils.data import DataLoader, Dataset, random_split
 from torchmetrics import ConfusionMatrix
 
 from ..logging import critical, info, warn
-from ..utils import MLP, temperature_scale, parse_project_and_run_name
+from ..utils import temperature_scale, parse_project_and_run_name
+from ..utils.models import MLP
 from ..utils.quantiles import quantile_loss
 from .core import MREstimator, IVDatasetWithGenotypes, IVDataset
 

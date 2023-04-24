@@ -15,14 +15,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
 
-from .nn import build_mlp
+from .nn import build_mlp, DensityModel
 
 
 EPS = 1e-30
 LOG2PI = math.log(2 * math.pi)
 
 
-class MixtureDensityNetwork(pl.LightningModule):
+class MixtureDensityNetwork(DensityModel):
     def __init__(
         self,
         input_size: int,
@@ -36,7 +36,6 @@ class MixtureDensityNetwork(pl.LightningModule):
         softmax_temperature: float = 1.0
     ):
         super().__init__()
-
         self.save_hyperparameters()
 
         hidden = list(hidden)

@@ -11,15 +11,13 @@ from typing import Iterable, List, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 import pandas as pd
-import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-from pytorch_lightning.loggers.logger import Logger
 from torch.utils.data import DataLoader, Dataset, random_split
 
 from ..logging import info
 from ..utils import parse_project_and_run_name, default_validate_args
-from ..utils.nn import MLP, OutcomeMLPBase
+from ..utils.models import MLP, OutcomeMLPBase
 from ..utils.quantiles import QuantileLossMulti
 from ..utils.conformal import get_conformal_adjustment_sqr
 from ..utils.training import train_model
@@ -30,7 +28,7 @@ from .core import (IVDatasetWithGenotypes, MREstimator,
 # fmt: off
 DEFAULTS = {
     "exposure_hidden": [128, 64],
-    "outcome_hidden": [32, 16],
+    "outcome_hidden": [64, 32],
     "exposure_learning_rate": 5e-4,
     "outcome_learning_rate": 5e-4,
     "exposure_batch_size": 10_000,
@@ -211,7 +209,7 @@ class QuantileIVEstimatorWithUncertainty(
         exposure_network: ExposureQuantileMLP,
         outcome_network: OutcomeMLP,
         alpha: float = 0.1,
-        q_hat: float = 0
+        q_hat: Union[float, torch.Tensor] = 0
     ):
         self.exposure_network = exposure_network
         self.outcome_network = outcome_network
@@ -239,14 +237,14 @@ class QuantileIVEstimatorWithUncertainty(
             x_to_y = functools.partial(self.outcome_network.x_to_y, taus=taus)
             pred.append(self.average_treatment_effect(x, covars, x_to_y))
 
-        pred = torch.hstack(pred)
+        pred_tens = torch.hstack(pred)
 
         # Conformal prediction adjustment if set.
         conformal_adj = [-self.q_hat, 0, self.q_hat]
         for j in range(3):
-            pred[:, j] = pred[:, j] + conformal_adj[j]
+            pred_tens[:, j] = pred_tens[:, j] + conformal_adj[j]
 
-        return pred.detach()
+        return pred_tens.detach()
 
 
 def main(args: argparse.Namespace) -> None:
@@ -298,7 +296,7 @@ def train_exposure_model(
         add_hidden_layer_batchnorm=True,
     )
 
-    return train_model(
+    train_model(
         train_dataset,
         val_dataset,
         model=model,
