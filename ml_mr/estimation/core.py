@@ -10,7 +10,7 @@ import torch
 from pytorch_genotypes.dataset import (BACKENDS, GeneticDatasetBackend,
                                        PhenotypeGeneticDataset)
 from scipy.interpolate import interp1d
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 
 from ..logging import warn, debug
 
@@ -311,6 +311,18 @@ class IVDataset(Dataset):
             required=True,
             type=str,
         )
+
+
+class FullBatchDataLoader(DataLoader):
+    def __init__(self, dataset: Dataset):
+        super().__init__(dataset, batch_size=len(dataset))  # type: ignore
+
+        # Cache the whole dataset.
+        dl = DataLoader(dataset, batch_size=len(dataset))  # type: ignore
+        self.payload = next(iter(dl))
+
+    def __iter__(self):
+        yield self.payload
 
 
 class IVDatasetWithGenotypes(IVDataset):

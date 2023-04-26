@@ -215,3 +215,25 @@ class Normal(Variable):
             size = self.size
 
         return np.random.normal(self.mu, self.sigma, size=size)
+
+
+class Uniform(Variable):
+    def __init__(
+        self,
+        name: str,
+        low: float = 0.0,
+        high: float = 1.0,
+        size: Optional[int] = None
+    ):
+        super().__init__(name)
+        self.low = low
+        self.high = high
+        self.size = size
+
+    def __call__(self, sim: Simulation):
+        if self.size is None:
+            size = sim.n
+        else:
+            size = self.size
+
+        return np.random.uniform(low=self.low, high=self.high, size=size)

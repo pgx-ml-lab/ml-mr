@@ -12,7 +12,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.loggers import Logger
 
 
-from ..estimation.core import Dataset
+from ..estimation.core import Dataset, FullBatchDataLoader
 from ..logging import info
 from . import parse_project_and_run_name
 
@@ -29,6 +29,7 @@ def train_model(
     accelerator: Optional[str] = None,
     wandb_project: Optional[str] = None,
     early_stopping_patience: int = 20,
+    use_full_batch_validation: bool = True
 ) -> float:
     if not checkpoint_filename.endswith(".ckpt"):
         checkpoint_filename += ".ckpt"
@@ -40,9 +41,13 @@ def train_model(
         num_workers=0,
     )
 
-    val_dataloader = DataLoader(
-        val_dataset, batch_size=len(val_dataset), num_workers=0  # type: ignore
-    )
+    if use_full_batch_validation:
+        val_dataloader = FullBatchDataLoader(val_dataset)
+    else:
+        val_dataloader = DataLoader(
+            val_dataset, batch_size=len(val_dataset),  # type: ignore
+            num_workers=0
+        )
 
     # Remove checkpoint if exists.
     full_filename = os.path.join(output_dir, checkpoint_filename)
