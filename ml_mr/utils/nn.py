@@ -8,9 +8,12 @@ from typing import Optional, Iterable, List, Callable, Dict, Any, Tuple
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader
 import torch.nn.functional as F
 
 from .quantiles import quantile_loss
+from .linear import ridge_regression
+from ..estimation.core import IVDataset, SupervisedLearningWrapper
 
 
 def build_mlp(
@@ -57,6 +60,35 @@ class DensityModel(pl.LightningModule):
         device: Optional[torch.device] = None
     ):
         raise NotImplementedError()
+
+
+class RidgeDensity(DensityModel):
+    def fit(self, dataset: IVDataset, alpha: float = 1.0):
+        dl = DataLoader(
+            SupervisedLearningWrapper(dataset), batch_size=len(dataset)
+        )
+
+        x, y = next(iter(dl))
+
+        # Get ridge solution.
+        self.betas = ridge_regression(x, y, alpha)
+
+        # Predicted values.
+        y_hat = x @ self.betas
+        self.sigma = torch.std(y - y_hat)
+
+    def sample(
+        self,
+        x: torch.Tensor,
+        n_samples: int,
+        device: Optional[torch.device] = None
+    ):
+        if device is not None:
+            self.betas = self.betas.to(device)
+
+        y_pred = x @ self.betas
+        eps = torch.randn((x.size(0), n_samples), device=device) * self.sigma
+        return y_pred + eps
 
 
 class MLP(pl.LightningModule):

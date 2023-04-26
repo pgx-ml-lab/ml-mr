@@ -1,5 +1,6 @@
 
 import argparse
+import pickle
 import json
 import os
 from typing import Iterable, List, Literal, Optional, Tuple, Dict, Type
@@ -14,7 +15,7 @@ from ..logging import info
 from ..utils import default_validate_args, parse_project_and_run_name
 from ..utils.conformal import OutcomeResidualPrediction
 from ..utils.models import (MLP, GaussianNet, MixtureDensityNetwork,
-                            OutcomeMLPBase)
+                            OutcomeMLPBase, RidgeDensity)
 from ..utils.nn import DensityModel
 from ..utils.training import train_model
 from .core import (IVDataset, IVDatasetWithGenotypes,
@@ -27,7 +28,7 @@ ExposureNetTypeKey = Literal["mixture_density_net", "gaussian_net", "ridge"]
 NET_TO_CLASS: Dict[ExposureNetTypeKey, Type[DensityModel]] = {
     "mixture_density_net": MixtureDensityNetwork,
     "gaussian_net": GaussianNet,
-    # "ridge": TODO
+    "ridge": RidgeDensity
 }
 
 
@@ -177,11 +178,8 @@ class DeepIVEstimator(MREstimatorWithUncertainty):
         with open(os.path.join(dir_name, "meta.json"), "rt") as f:
             meta = json.load(f)
 
-        # Get the Exposure class.
-        ExposureNetCls = NET_TO_CLASS[meta["exposure_network_type"]]
-
-        exposure_network = ExposureNetCls.load_from_checkpoint(
-            os.path.join(dir_name, "exposure_network.ckpt")
+        exposure_network = _load_exposure_model_from_dir(
+            dir_name, meta["exposure_network_type"]
         )
 
         outcome_network = OutcomeMLP.load_from_checkpoint(
@@ -296,6 +294,15 @@ def train_exposure_model(
         )
         monitored_metric = "val_loss"
 
+    elif exposure_network_type == "ridge":
+        model = RidgeDensity()
+        model.fit(train_dataset)  # type: ignore
+
+        with open(os.path.join(output_dir, "exposure_network.pkl"), "wb") as f:
+            pickle.dump(model, f)
+
+        return
+
     train_model(
         SupervisedLearningWrapper(train_dataset),  # type: ignore
         SupervisedLearningWrapper(val_dataset),  # type: ignore
@@ -377,6 +384,23 @@ def train_conformal_predictor(
     )
 
 
+def _load_exposure_model_from_dir(
+    dirname: str,
+    exposure_network_type: ExposureNetTypeKey
+) -> DensityModel:
+    if exposure_network_type == "ridge":
+        filename = os.path.join(dirname, "exposure_network.pkl")
+        with open(filename, "rb") as f:
+            return pickle.load(f)
+
+    filename = os.path.join(dirname, "exposure_network.ckpt")
+    exposure_network = NET_TO_CLASS[exposure_network_type]\
+        .load_from_checkpoint(filename).eval()  # type: ignore
+
+    exposure_network.freeze()
+    return exposure_network
+
+
 def fit_deep_iv(
     dataset: IVDataset,
     exposure_network_type: ExposureNetTypeKey = DEFAULTS["exposure_network_type"],  # type: ignore # noqa: E501
@@ -436,12 +460,9 @@ def fit_deep_iv(
         wandb_project=wandb_project
     )
 
-    exposure_network = NET_TO_CLASS[exposure_network_type]\
-        .load_from_checkpoint(
-            os.path.join(output_dir, "exposure_network.ckpt")
-        ).eval()  # type: ignore
-
-    exposure_network.freeze()
+    exposure_network = _load_exposure_model_from_dir(
+        output_dir, exposure_network_type
+    )
 
     outcome_val_loss = train_outcome_model(
         train_dataset=train_dataset,
@@ -565,7 +586,7 @@ def configure_argparse(parser) -> None:
         "--exposure-network-type",
         type=str,
         help="Density model for the exposure network.",
-        choices=["mixture_density_net", "gaussian_net"],
+        choices=["mixture_density_net", "gaussian_net", "ridge"],
         default=DEFAULTS["exposure_network_type"]
     )
 
