@@ -18,6 +18,7 @@ import numpy as np
 
 from ..estimation import MODELS, MREstimator, MREstimatorWithUncertainty
 from .metrics import mse, mean_prediction_interval_absolute_width
+from ..logging import warn
 
 
 def parse_args(argv):
@@ -27,9 +28,9 @@ def parse_args(argv):
 
     parser.add_argument(
         "--input",
-        required=True,
         type=str,
-        help="Path to an estimated model results."
+        help="Path to an estimated model(s).",
+        nargs="+"
     )
 
     parser.add_argument(
@@ -118,9 +119,6 @@ def plot(
 def main():
     args = parse_args(sys.argv[2:])
 
-    # Load MREstimator.
-    estimator = MODELS[args.model]["load"](args.input)
-
     # Load the true function.
     if args.true_function.startswith("lambda"):
         # This is not safe, but it's very useful.
@@ -145,19 +143,34 @@ def main():
     # Parse domain.
     domain_lower, domain_upper = [float(i) for i in args.domain.split(",")]
 
-    cur_mse = mse(
-        estimator, true_function, domain=(domain_lower, domain_upper)
-    )
+    # Load MREstimator.
+    for input in args.input:
+        try:
+            estimator = MODELS[args.model]["load"](input)
+        except FileNotFoundError:
+            warn(f"Couldn't load model '{input}'. Ignoring.")
+            continue
 
-    print(cur_mse, end="")
-
-    if isinstance(estimator, MREstimatorWithUncertainty):
-        width = mean_prediction_interval_absolute_width(
-            estimator, [domain_lower, domain_upper], 0.1
+        cur_mse = mse(
+            estimator, true_function, domain=(domain_lower, domain_upper)
         )
-        print(f",{width}", end="")
 
-    print()
+        print(input, cur_mse, sep=",", end="")
 
-    if args.plot:
-        plot(estimator, true_function, domain=(domain_lower, domain_upper))
+        if isinstance(estimator, MREstimatorWithUncertainty):
+            width = mean_prediction_interval_absolute_width(
+                estimator, [domain_lower, domain_upper], 0.1
+            )
+            print(f",{width}", end="")
+
+        print()
+
+        if args.plot:
+            if len(args.input) == 1:
+                plot(
+                    estimator,
+                    true_function,
+                    domain=(domain_lower, domain_upper)
+                )
+            else:
+                warn("Plotting disabled in batch mode.")
