@@ -262,7 +262,7 @@ def train_exposure_model(
     n_gaussians: int = 5,
     accelerator: Optional[str] = None,
     wandb_project: Optional[str] = None
-) -> None:
+) -> Optional[float]:
     info("Training exposure model.")
 
     if exposure_network_type == "mixture_density_net":
@@ -303,7 +303,7 @@ def train_exposure_model(
 
         return
 
-    train_model(
+    return train_model(
         SupervisedLearningWrapper(train_dataset),  # type: ignore
         SupervisedLearningWrapper(val_dataset),  # type: ignore
         model,
@@ -443,7 +443,7 @@ def fit_deep_iv(
         dataset, [1 - validation_proportion, validation_proportion]
     )
 
-    train_exposure_model(
+    exposure_val_loss = train_exposure_model(
         exposure_network_type=exposure_network_type,
         train_dataset=train_dataset,
         val_dataset=val_dataset,
@@ -459,6 +459,8 @@ def fit_deep_iv(
         accelerator=accelerator,
         wandb_project=wandb_project
     )
+
+    meta["exposure_val_loss"] = exposure_val_loss
 
     exposure_network = _load_exposure_model_from_dir(
         output_dir, exposure_network_type
