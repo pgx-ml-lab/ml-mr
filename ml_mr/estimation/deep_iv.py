@@ -301,7 +301,7 @@ def train_exposure_model(
         with open(os.path.join(output_dir, "exposure_network.pkl"), "wb") as f:
             pickle.dump(model, f)
 
-        return
+        return None
 
     return train_model(
         SupervisedLearningWrapper(train_dataset),  # type: ignore

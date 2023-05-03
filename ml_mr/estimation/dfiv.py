@@ -13,75 +13,59 @@ https://github.com/liyuan9988/DeepFeatureIV
 Test code:
 
 from ml_mr.estimation.core import IVDataset
-from ml_mr.estimation.dfiv import DFIVModel
+from ml_mr.estimation.dfiv import fit_dfiv, DFIVEstimator
 from torch.utils.data import DataLoader
 import pandas as pd
 import pytorch_lightning as pl
 
-df = pd.read_csv("/Users/legaultm/projects/ml-mr/simulation_models/tian_biorxiv_2022/simulated_datasets/tian-scenario-A2_sim_data.csv.gz")
+df = pd.read_csv("/home/legaultm/projects/ml-mr/simulation_models/tian_biorxiv_2022/simulated_datasets/tian-scenario-A2_sim_data.csv.gz")
 dataset = IVDataset.from_dataframe(df, "X", "Y", ["Z"])
 # dataset = IVDataset.from_dataframe(df, "X", "Y", ["Z"], ["U"])
 
-dl = DataLoader(dataset, num_workers=0, batch_size=10_000, shuffle=True)
+fit_dfiv(dataset, wandb_project="dfiv_tests")
 
-model = DFIVModel(
-    n_instruments=1,
-    n_exposures=1,
-    n_outcomes=1,
-    n_covariates=0,
-    n_instrument_features=2,
-    n_exposure_features=2,
-    n_covariate_features=1,
-    instrument_net_hidden=[64, 32],
-    exposure_net_hidden=[64, 32],
-    covariate_net_hidden=[64, 32],
-    ridge_lambda1=2,
-    ridge_lambda2=2,
-    n_updates_stage1=1,
-    n_updates_stage2=20,
-    n_updates_covariate_net=5,
-    instrument_net_learning_rate=1e-2,
-    exposure_net_learning_rate=1e-2,
-    covariate_net_learning_rate=1e-2,
-)
-
-trainer = pl.Trainer(
-    log_every_n_steps=1,
-    max_epochs=200,
-)
-
-trainer.fit(model, dl)
-
-
+estimator = DFIVEstimator.from_results("dfiv_estimate")
 
 """
 
-from typing import Dict, Optional, Iterable
+import os
+import json
+from typing import Dict, Optional, Iterable, List
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
+from torch.utils.data import random_split, DataLoader, Dataset
 
 from ..utils.linear import ridge_fit_predict, ridge_regression
 from ..utils.nn import build_mlp
+from ..utils.training import train_model
+from .core import IVDataset, MREstimator
 
 
 DEFAULTS = {
-    "ridge_lambda_1": 0.1,
-    "ridge_lambda_2": 0.1,
-    "n_instrument_features": 5,
-    "n_exposure_features": 5,
-    "n_covariate_features": 5,
+    "output_dir": "dfiv_estimate",
+    "validation_proportion": 0.2,
+    "ridge_lambda_1": 1,
+    "ridge_lambda_2": 1,
+    "n_instrument_features": 1,
+    "n_exposure_features": 1,
+    "n_covariate_features": 1,
     "n_updates_stage1": 20,
     "n_updates_covariate_net": 1,
     "n_updates_stage2": 1,
     "instrument_net_hidden": [128, 64],
     "exposure_net_hidden": [128, 64],
     "covariate_net_hidden": [128, 64],
-    "instrument_net_learning_rate": 1e-3,
-    "exposure_net_learning_rate": 1e-3,
-    "covariate_net_learning_rate": 1e-3,
+    "instrument_net_learning_rate": 0.01,
+    "exposure_net_learning_rate": 0.01,
+    "covariate_net_learning_rate": 0.01,
+    "batch_size": 10_000,
+    "max_epochs": 1000,
+    "accelerator": "gpu" if (
+        torch.cuda.is_available() and torch.cuda.device_count() > 0
+    ) else "cpu",
 }
 
 
@@ -136,7 +120,8 @@ def dfiv_2sls(
 
     # Stage 1
     betas1, x_feats_pred = ridge_fit_predict(
-        z_feats, x_feats, lam1
+        z_feats, x_feats, lam1,
+        device=z_feats.device
     )
 
     if covar_feats is not None:
@@ -144,17 +129,17 @@ def dfiv_2sls(
 
     # Stage 2
     betas2, y_hat = ridge_fit_predict(
-        x_feats_pred, outcome, lam2
+        x_feats_pred, outcome, lam2,
+        device=z_feats.device
     )
 
-    loss = (
-        F.mse_loss(y_hat, outcome) +
-        lam2 * torch.norm(betas2) ** 2
-    )
+    mse = F.mse_loss(y_hat, outcome)
+    loss = mse + lam2 * torch.norm(betas2) ** 2
 
     return {
         "betas1": betas1,
         "betas2": betas2,
+        "mse": mse,
         "loss": loss
     }
 
@@ -197,7 +182,8 @@ class DFIVModel(pl.LightningModule):
 
         # Covariate feature learner if needed.
         if n_covariates > 0:
-            self.c_net = nn.Sequential(*build_mlp(
+            assert covariate_net_hidden is not None
+            self.c_net: Optional[nn.Sequential] = nn.Sequential(*build_mlp(
                 n_covariates, covariate_net_hidden, n_covariate_features
             ))
         else:
@@ -248,7 +234,8 @@ class DFIVModel(pl.LightningModule):
         stage1_weight, x_feats_hat = ridge_fit_predict(
             x_feats,
             z_feats,
-            self.hparams.ridge_lambda1
+            self.hparams.ridge_lambda1,
+            device=self.device
         )
 
         losses = torch.empty(n_updates, device=self.device)
@@ -261,7 +248,8 @@ class DFIVModel(pl.LightningModule):
 
             # Stage 2 regression.
             betas2, y_hat = ridge_fit_predict(
-                combined_feats, y, self.hparams.ridge_lambda2
+                combined_feats, y, self.hparams.ridge_lambda2,
+                device=self.device
             )
 
             loss = (
@@ -298,7 +286,8 @@ class DFIVModel(pl.LightningModule):
 
             iv_feat = add_intercept(self.z_net(ivs))
             betas1, x_feat_hat = ridge_fit_predict(
-                iv_feat, x_feat, self.hparams.ridge_lambda1
+                iv_feat, x_feat, self.hparams.ridge_lambda1,
+                device=self.device
             )
 
             loss = (
@@ -333,6 +322,7 @@ class DFIVModel(pl.LightningModule):
             c_feats = None
 
         losses = torch.empty(n_updates, device=self.device)
+        mses = torch.empty(n_updates, device=self.device)
         for i in range(n_updates):
             opt_exposure.zero_grad()
             x_feats = self.x_net(x)
@@ -346,11 +336,12 @@ class DFIVModel(pl.LightningModule):
             )
             loss = results["loss"]
             losses[i] = loss
+            mses[i] = results["mse"]
 
             self.manual_backward(loss)
             opt_exposure.step()
 
-        return torch.mean(losses)
+        return torch.mean(losses), torch.mean(mses)
 
     def training_step(self, batch, batch_idx):
         opt = self.optimizers()
@@ -368,7 +359,7 @@ class DFIVModel(pl.LightningModule):
             )
             self.log("covariate_loss", covariate_loss)
 
-        stage2_loss = self.stage2_update(
+        stage2_loss, mse = self.stage2_update(
             batch,
             self.hparams.n_updates_stage2,
             opt[1],  # Exposure net optimizer.
@@ -376,3 +367,193 @@ class DFIVModel(pl.LightningModule):
 
         self.log("stage1_loss", stage1_loss)
         self.log("stage2_loss", stage2_loss)
+        self.log("mse", mse)
+
+    def validation_step(self, batch, batch_idx):
+        x, y, ivs, covars = batch
+        with torch.no_grad():
+            z_feats = self.z_net(ivs)
+            x_feats = self.x_net(x)
+            if self.c_net is not None:
+                c_feats = self.c_net(covars)
+            else:
+                c_feats = None
+
+        res = dfiv_2sls(z_feats, x_feats, c_feats, y,
+                        self.hparams.ridge_lambda1,
+                        self.hparams.ridge_lambda2)
+
+        self.log("val_loss", res["loss"])
+
+
+def get_betas(
+    dataset: Dataset,
+    batch_size: int,
+    dfiv: DFIVModel,
+    ridge_lambda1: float,
+    ridge_lambda2: float
+) -> Dict[str, torch.Tensor]:
+    dl = DataLoader(dataset, batch_size=batch_size)
+    _z_feats = []
+    _x_feats = []
+    _c_feats = []
+    _ys = []
+    for batch in iter(dl):
+        x, y, ivs, covars = batch
+        _z_feats.append(dfiv.z_net(ivs).detach())
+        _x_feats.append(dfiv.x_net(x).detach())
+        if covars.numel() > 0:
+            assert dfiv.c_net is not None
+            _c_feats.append(dfiv.c_net(covars).detach())
+
+        _ys.append(y)
+
+    z_feats = torch.vstack(_z_feats)
+    x_feats = torch.vstack(_x_feats)
+    if _c_feats:
+        c_feats: Optional[torch.Tensor] = torch.vstack(_c_feats)
+    else:
+        c_feats = None
+    ys = torch.vstack(_ys)
+
+    return dfiv_2sls(z_feats, x_feats, c_feats, ys,
+                     ridge_lambda1, ridge_lambda2)
+
+
+def fit_dfiv(
+    dataset: IVDataset,  # type: ignore # noqa: E501
+    output_dir: str = DEFAULTS["output_dir"],  # type: ignore
+    validation_proportion: float = DEFAULTS["validation_proportion"],  # type: ignore # noqa: E501
+    n_instrument_features: int = DEFAULTS["n_instrument_features"],  # type: ignore # noqa: E501
+    n_exposure_features: int = DEFAULTS["n_exposure_features"],  # type: ignore # noqa: E501
+    n_covariate_features: Optional[int] = DEFAULTS["n_covariate_features"],  # type: ignore # noqa: E501
+    instrument_net_hidden: List[int] = DEFAULTS["instrument_net_hidden"],  # type: ignore # noqa: E501
+    exposure_net_hidden: List[int] = DEFAULTS["exposure_net_hidden"],  # type: ignore # noqa: E501
+    covariate_net_hidden: Optional[List[int]] = DEFAULTS["covariate_net_hidden"],  # type: ignore # noqa: E501
+    ridge_lambda1: float = DEFAULTS["ridge_lambda_1"],  # type: ignore
+    ridge_lambda2: float = DEFAULTS["ridge_lambda_2"],  # type: ignore
+    n_updates_stage1: int = DEFAULTS["n_updates_stage1"],  # type: ignore # noqa: E501
+    n_updates_covariate_net: int = DEFAULTS["n_updates_covariate_net"],  # type: ignore # noqa: E501
+    n_updates_stage2: int = DEFAULTS["n_updates_stage2"],  # type: ignore # noqa: E501
+    instrument_net_learning_rate: float = DEFAULTS["instrument_net_learning_rate"],  # type: ignore # noqa: E501
+    exposure_net_learning_rate: float = DEFAULTS["exposure_net_learning_rate"],  # type: ignore # noqa: E501
+    covariate_net_learning_rate: Optional[float] = DEFAULTS["covariate_net_learning_rate"],  # type: ignore # noqa: E501
+    batch_size: int = DEFAULTS["batch_size"],   # type: ignore
+    max_epochs: int = DEFAULTS["max_epochs"],   # type: ignore
+    accelerator: str = DEFAULTS["accelerator"],  # type: ignore
+    wandb_project: Optional[str] = None
+):
+    # Create output directory if needed.
+    if not os.path.isdir(output_dir):
+        os.makedirs(output_dir)
+
+    # Metadata dictionary that will be saved alongside the results.
+    meta = locals()
+    del meta["dataset"]  # We don't serialize the dataset.
+
+    covars = dataset.save_covariables(output_dir)
+
+    min_x = torch.min(dataset.exposure).item()
+    max_x = torch.max(dataset.exposure).item()
+    domain = (min_x, max_x)
+
+    # Split here into train and val.
+    train_dataset, val_dataset = random_split(
+        dataset, [1 - validation_proportion, validation_proportion]
+    )
+
+    model = DFIVModel(
+        n_instruments=dataset.n_instruments(),
+        n_exposures=dataset.n_exposures(),
+        n_outcomes=dataset.n_outcomes(),
+        n_covariates=dataset.n_covars(),
+        n_instrument_features=n_instrument_features,
+        n_exposure_features=n_exposure_features,
+        n_covariate_features=n_covariate_features,
+        instrument_net_hidden=instrument_net_hidden,
+        exposure_net_hidden=exposure_net_hidden,
+        covariate_net_hidden=covariate_net_hidden,
+        ridge_lambda1=ridge_lambda1,
+        ridge_lambda2=ridge_lambda2,
+        n_updates_stage1=n_updates_stage1,
+        n_updates_covariate_net=n_updates_covariate_net,
+        n_updates_stage2=n_updates_stage2,
+        instrument_net_learning_rate=instrument_net_learning_rate,
+        exposure_net_learning_rate=exposure_net_learning_rate,
+        covariate_net_learning_rate=covariate_net_learning_rate,
+    )
+
+    train_model(
+        train_dataset,
+        val_dataset,
+        model,
+        "val_loss",
+        output_dir,
+        "dfiv_model.ckpt",
+        batch_size, max_epochs, accelerator, wandb_project
+    )
+
+    # Load the best model.
+    filename = os.path.join(output_dir, "dfiv_model.ckpt")
+    model = DFIVModel.load_from_checkpoint(filename)
+
+    model.eval()
+
+    # Find the optimal coefficients for the linear weights.
+    _2sls_results = get_betas(dataset, batch_size, model,
+                              ridge_lambda1, ridge_lambda2)
+
+    torch.save(
+        {"betas1": _2sls_results["betas1"],
+         "betas2": _2sls_results["betas2"]},
+        os.path.join(output_dir, "linear_weights.pt")
+    )
+
+
+class DFIVEstimator(MREstimator):
+    def __init__(
+        self,
+        dfiv_model: DFIVModel,
+        betas1: torch.Tensor,
+        betas2: torch.Tensor
+    ):
+        self.model = dfiv_model
+        self.betas1 = betas1
+        self.betas2 = betas2
+
+    @classmethod
+    def from_results(cls, dir_name: str) -> "DFIVEstimator":
+        weights = torch.load(os.path.join(dir_name, "linear_weights.pt"))
+
+        model = DFIVModel.load_from_checkpoint(
+            os.path.join(dir_name, "dfiv_model.ckpt")
+        )
+
+        return cls(model, weights["betas1"], weights["betas2"])
+
+    def effect(
+        self,
+        x: torch.Tensor,
+        covars: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        def x_to_y(
+            x: torch.Tensor,
+            covars: Optional[torch.Tensor]
+        ) -> torch.Tensor:
+            if x.ndim == 1:
+                x = x.reshape(-1, 1)
+
+            x_feats = add_intercept(self.model.x_net(x))
+
+            if covars is not None:
+                assert self.model.c_net is not None
+                covar_feats = self.model.c_net(covars)
+                x_feats = augment_with_covar_feats(x_feats, covar_feats)
+
+            return x_feats @ self.betas2
+
+        return self.average_treatment_effect(x, covars, x_to_y)
+
+
+estimate = fit_dfiv
+load = DFIVEstimator.from_results

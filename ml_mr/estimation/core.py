@@ -195,10 +195,29 @@ class IVDataset(Dataset):
     def __len__(self) -> int:
         return self.ivs.size(0)
 
+    def n_outcomes(self) -> int:
+        """Counts the number of outcomes."""
+        _, y, _, _ = self[0]
+        return y.numel()
+
+    def n_exposures(self) -> int:
+        """Counts the number of exposures."""
+        x, _, _, _ = self[0]
+        return x.numel()
+
+    def n_instruments(self) -> int:
+        """Counts the number of IVs."""
+        _, _, ivs, _ = self[0]
+        return ivs.numel()
+
+    def n_covars(self) -> int:
+        """Counts the number of covariables."""
+        _, _, _, covars = self[0]
+        return covars.numel()
+
     def n_exog(self) -> int:
         """Counts the number of exogenous variables (IVs + covariables)."""
-        _, _, ivs, covars = self[0]
-        return ivs.numel() + covars.numel()
+        return self.n_instruments() + self.n_covars()
 
     def save_covariables(
         self,

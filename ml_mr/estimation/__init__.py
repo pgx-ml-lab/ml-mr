@@ -4,6 +4,7 @@ from . import bin_iv
 from . import deep_iv
 from . import quantile_iv
 from . import baselines
+from . import dfiv
 
 MODELS = {
     "bin_iv": {
@@ -21,5 +22,9 @@ MODELS = {
     "deep_iv": {
         "estimate": deep_iv.estimate,
         "load": deep_iv.load
-    }
+    },
+    "dfiv": {
+        "estimate": dfiv.estimate,
+        "load": dfiv.load
+    },
 }

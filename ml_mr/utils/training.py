@@ -85,7 +85,7 @@ def train_model(
         ],
         logger=logger
     )
-    trainer.fit(model, train_dataloader, val_dataloader)
+    trainer.fit(model, train_dataloader, val_dataloader)  # type: ignore
 
     # Return the best score on the tracked metric.
     score = model_checkpoint.best_model_score
