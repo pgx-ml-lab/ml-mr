@@ -35,21 +35,22 @@
     ]
 }
 
-# TODO if it's a pure grid, we need to be deterministic in the number of runs.
-
 """
 
 
 import os
 import sys
 import json
+import math
 import sqlite3
 import argparse
 import itertools
+from typing import List, Iterator
 
 import numpy as np
 
 from ..estimation.core import IVDataset
+from ..logging import debug, warn
 
 
 SAMPLERS = {}
@@ -65,33 +66,29 @@ class sampler_mode:
         return cls
 
 
-class SweepConfig:
-    def __init__(self, dataset, run_output, parameters, max_runs):
-        self.dataset = dataset
-        self.run_output = run_output
-        self.parameters = parameters
-        self.max_runs = max_runs
-
-    def print(self):
-        print("*** Sweep configuration ***")
-        print("[dataset]")
-        print(self.dataset)
-        print()
-
-        print("[sweep_config]")
-        print(f"=> Runs will be saved following template: '{self.run_output}'")
-        print(f"=> Max number of runs: '{self.max_runs}'")
-        print()
-
-        print("[parameters]")
-        for parameter in self.parameters:
-            print(parameter)
-
-
 class Sampler:
+    def __init__(self, db_type: str):
+        self.db_type = db_type
+
     def __iter__(self):
         # Should be an infinite generator.
         raise NotImplementedError()
+
+
+class StochasticSampler(Sampler):
+    """Class to denote stochastic samplers.
+
+    The main implication is that if there is at least one parameter with
+    a stochastic sampler, runs will be sampled up to the max_runs parameter.
+
+    """
+    pass
+
+
+class DeterministicSampler(Sampler):
+    def __init__(self, db_type: str, n_elements: int):
+        self.n_elements = n_elements
+        super().__init__(db_type)
 
 
 class SweepParameter:
@@ -103,12 +100,15 @@ class SweepParameter:
         return f"<Parameter: {self.name} - {self.sampler}>"
 
     def get_instances(self, n: int = 1):
-        for _ in range(n):
-            yield from self.sampler
+        iterator = iter(self.sampler)
+        for i in range(n):
+            yield next(iterator)
+            if i >= n:
+                break
 
 
 @sampler_mode("grid")
-class GridSampler:
+class GridSampler(DeterministicSampler):
     def __init__(self, start, stop, n_values=None, step=None,
                  log: bool = False):
         if n_values is not None and step is not None:
@@ -128,14 +128,28 @@ class GridSampler:
         else:
             raise ValueError("Provide either step or n_values.")
 
+        super().__init__("float", len(self._values))
+
     def __iter__(self):
         for v in itertools.cycle(self._values):
             yield v
 
 
 @sampler_mode("list")
-class ListSampler:
+class ListSampler(DeterministicSampler):
     def __init__(self, values: list):
+        # Infer type from list.
+        if all([isinstance(e, int) for e in values]):
+            db_type = "integer"
+        elif any([isinstance(e, float) for e in values]):
+            db_type = "float"
+        elif all([isinstance(e, str) for e in values]):
+            db_type = "text"
+        else:
+            raise ValueError(f"Couldn't infer db type from list '{values}'")
+
+        super().__init__(db_type, len(values))
+
         self.values = values
 
     def __iter__(self):
@@ -144,8 +158,10 @@ class ListSampler:
 
 
 @sampler_mode("random_uniform")
-class RandomUniform:
+class RandomUniform(StochasticSampler):
     def __init__(self, low, high, log=False):
+        super().__init__("float")
+
         self.log = log
 
         if log:
@@ -164,6 +180,42 @@ class RandomUniform:
                     yield np.exp(element)
                 else:
                     yield element
+
+
+class SweepConfig:
+    def __init__(
+        self,
+        dataset: IVDataset,
+        run_output: str,
+        parameters: List["SweepParameter"],
+        max_runs: int
+    ):
+        self.dataset = dataset
+        self.run_output = run_output
+        self.parameters = parameters
+        self.max_runs = max_runs
+
+        # Check if at least one parameter has a stochastic sampler.
+        self.stochastic = False
+        for p in self.parameters:
+            if isinstance(p.sampler, StochasticSampler):
+                self.stochastic = True
+                break
+
+    def print(self):
+        print("*** Sweep configuration ***")
+        print("[dataset]")
+        print(self.dataset)
+        print()
+
+        print("[sweep_config]")
+        print(f"=> Runs will be saved following template: '{self.run_output}'")
+        print(f"=> Max number of runs: '{self.max_runs}'")
+        print()
+
+        print("[parameters]")
+        for parameter in self.parameters:
+            print(parameter)
 
 
 def parse_args(argv):
@@ -228,7 +280,98 @@ def parse_config(filename: str) -> SweepConfig:
     return SweepConfig(dataset, run_output, parameters, max_runs)
 
 
-def populate_run_database(sweep_config: SweepConfig) -> str:
+def create_sweep_database(sweep_config: SweepConfig) -> str:
+    filename = "ml_mr_sweep_runs.db"
+    con = sqlite3.connect(filename)
+    cur = con.cursor()
+
+    # Create the parameters table.
+    create_params = (
+        "create table run_parameters (\n"
+        "  run_id integer primary key,\n"
+    )
+
+    for parameter in sweep_config.parameters:
+        create_params += (
+            "  `{}` {},\n".format(parameter.name, parameter.sampler.db_type)
+        )
+
+    create_params = create_params.strip().rstrip(",") + "\n);"
+    debug(create_params)
+
+    cur.execute(create_params)
+
+    # Create the run status table.
+    cur.execute(
+        "create table run_status (\n"
+        "  run_id integer primary key,\n"
+        "  done boolean default false,\n"
+        "  in_progress boolean default false\n"
+        ");"
+    )
+
+    # Populate with runs.
+    if sweep_config.stochastic:
+        debug("Generating parameter table for stochastic sweep.")
+
+        # Sample up to max runs.
+        parameter_table: Iterator = zip(
+            itertools.count(0),
+            *[param.get_instances(sweep_config.max_runs)
+              for param in sweep_config.parameters]
+        )
+
+        parameter_table = itertools.islice(
+            parameter_table, sweep_config.max_runs
+        )
+
+    else:
+        debug("Generating parameter table for deterministic sweep.")
+        n_elements = []
+        for parameter in sweep_config.parameters:
+            assert isinstance(parameter.sampler, DeterministicSampler)
+            n_elements.append(parameter.sampler.n_elements)
+
+        expected_n_runs = math.prod(n_elements)
+
+        if expected_n_runs > sweep_config.max_runs:
+            warn(
+                f"Specified parameter values have {expected_n_runs} "
+                f"parameters, but the specified max_runs is "
+                f"{sweep_config.max_runs}. Some parameter combinations will "
+                f"not be included in the sweep. Increase the max_runs in the "
+                f"sweep config to avoid this."
+            )
+
+            n_runs = min(expected_n_runs, sweep_config.max_runs)
+
+        else:
+            n_runs = expected_n_runs
+
+        parameter_table = zip(
+            itertools.count(0),
+            *[param.get_instances(n_runs)
+                for param in sweep_config.parameters]
+        )
+
+    n_params = len(sweep_config.parameters)
+    # Note we have an extra parameter for the run_id.
+    val_placeholder = "({})".format("?," * (n_params) + "?")
+    cur.executemany(
+        f"insert into run_parameters values {val_placeholder}",
+        parameter_table
+    )
+
+    con.commit()
+
+    # Create the entries in run status.
+    cur.execute(
+        "insert into run_status "
+        "  select run_id, false, false "
+        "  from run_parameters;"
+    )
+    con.commit()
+
     return "ml_mr_sweep_runs.db"
 
 
@@ -242,6 +385,6 @@ def main():
 
     conf.print()
 
-    database = populate_run_database(conf)
+    database = create_sweep_database(conf)
 
     execute_runs(database, args.n_workers)
