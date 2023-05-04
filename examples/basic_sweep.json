@@ -1,0 +1,34 @@
+{
+    "sweep": {
+        "max_runs": 3,
+        "run_output": "my_sweep_run_{run_id}"
+    },
+    "dataset": {
+        "filename": "../ml_mr/test_data/basic_model_data.csv.gz",
+        "sep": ",",
+        "exposure": "exposure",
+        "outcome": "outcome",
+        "instruments": ["v1", "v2"]
+    },
+    "parameters": [
+        {
+            "name": "exposure_learning_rate",
+            "sampler": "grid",
+            "start": 1e-4,
+            "stop": 0.01,
+            "n_values": 3,
+            "log": true
+        },
+        {
+            "name": "outcome_learning_rate",
+            "sampler": "random_uniform",
+            "low": 1e-4,
+            "high": 0.01
+        },
+        {
+            "name": "outcome_weight_decay",
+            "sampler": "list",
+            "values": [0, 1e-2]
+        }
+    ]
+}

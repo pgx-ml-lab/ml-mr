@@ -1,6 +1,7 @@
 import sys
 from .estimation.cli import main as estimation_main
 from .evaluation.cli import main as evaluation_main
+from .sweep.cli import main as sweep_main
 
 
 def main():
@@ -22,6 +23,9 @@ def main():
 
     elif mode == "evaluation":
         return evaluation_main()
+
+    elif mode == "sweep":
+        return sweep_main()
 
     else:
         print(

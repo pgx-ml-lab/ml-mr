@@ -266,6 +266,21 @@ class IVDataset(Dataset):
         return IVDataset(exposure, outcome, ivs, covars)
 
     @staticmethod
+    def from_json_configuration(configuration) -> "IVDataset":
+        data = pd.read_csv(
+            configuration["filename"],
+            sep=configuration.get("sep", "\t")
+        )
+
+        return IVDataset.from_dataframe(
+            data,
+            exposure_col=configuration["exposure"],
+            outcome_col=configuration["outcome"],
+            iv_cols=configuration["instruments"],
+            covariable_cols=configuration.get("covariables", []),
+        )
+
+    @staticmethod
     def from_argparse_namespace(args: argparse.Namespace) -> "IVDataset":
         data = pd.read_csv(
             args.data, sep=args.sep
