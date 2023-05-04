@@ -19,9 +19,9 @@ def ridge_regression(
     L = x.T @ x + alpha * torch.eye(n_features, device=device)
     try:
         L_chol = torch.linalg.cholesky(L)
-    except torch.linalg.LinAlgError as e:
-        print(L)
-        raise e
+    except Exception as e:
+        print(e)
+        raise RuntimeError()
 
     betas = torch.cholesky_solve(x.T @ y, L_chol)
 

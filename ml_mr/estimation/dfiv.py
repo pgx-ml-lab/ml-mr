@@ -17,8 +17,18 @@ from ml_mr.estimation.dfiv import fit_dfiv, DFIVEstimator
 from torch.utils.data import DataLoader
 import pandas as pd
 import pytorch_lightning as pl
+import numpy as np
 
-df = pd.read_csv("/home/legaultm/projects/ml-mr/simulation_models/tian_biorxiv_2022/simulated_datasets/tian-scenario-A2_sim_data.csv.gz")
+n = 500_000
+U = np.random.normal(size=n)
+Z = np.random.normal(size=n)
+X = 0.5*Z + 0.2*U + np.random.normal(scale=0.5, size=n)
+print(np.percentile(X, [1, 99]))
+
+y_x = lambda x: 0.8*x + 0.6*np.sin(5*x) + 0.05*x**3
+Y = y_x(X) + -U + np.random.normal(scale=0.5, size=n)
+df = pd.DataFrame(dict(X=X, Y=Y, Z=Z))
+
 dataset = IVDataset.from_dataframe(df, "X", "Y", ["Z"])
 # dataset = IVDataset.from_dataframe(df, "X", "Y", ["Z"], ["U"])
 
@@ -41,18 +51,19 @@ from torch.utils.data import random_split, DataLoader, Dataset
 from ..utils.linear import ridge_fit_predict, ridge_regression
 from ..utils.nn import build_mlp
 from ..utils.training import train_model
+from ..logging import warn
 from .core import IVDataset, MREstimator
 
 
 DEFAULTS = {
     "output_dir": "dfiv_estimate",
     "validation_proportion": 0.2,
-    "ridge_lambda_1": 1,
-    "ridge_lambda_2": 1,
-    "n_instrument_features": 1,
-    "n_exposure_features": 1,
-    "n_covariate_features": 1,
-    "n_updates_stage1": 20,
+    "ridge_lambda_1": 0.9,
+    "ridge_lambda_2": 0.999,
+    "n_instrument_features": 3,
+    "n_exposure_features": 3,
+    "n_covariate_features": 5,
+    "n_updates_stage1": 40,
     "n_updates_covariate_net": 1,
     "n_updates_stage2": 1,
     "instrument_net_hidden": [128, 64],
@@ -61,8 +72,8 @@ DEFAULTS = {
     "instrument_net_learning_rate": 0.01,
     "exposure_net_learning_rate": 0.01,
     "covariate_net_learning_rate": 0.01,
-    "batch_size": 10_000,
-    "max_epochs": 1000,
+    "batch_size": 15_000,
+    "max_epochs": 50,
     "accelerator": "gpu" if (
         torch.cuda.is_available() and torch.cuda.device_count() > 0
     ) else "cpu",
@@ -172,19 +183,22 @@ class DFIVModel(pl.LightningModule):
 
         # Instrument feature learner.
         self.z_net = nn.Sequential(*build_mlp(
-            n_instruments, instrument_net_hidden, n_instrument_features
+            n_instruments, instrument_net_hidden, n_instrument_features,
+            add_hidden_layer_batchnorm=True
         ))
 
         # Exposure feature learner.
         self.x_net = nn.Sequential(*build_mlp(
-            n_exposures, exposure_net_hidden, n_exposure_features
+            n_exposures, exposure_net_hidden, n_exposure_features,
+            add_input_layer_batchnorm=True
         ))
 
         # Covariate feature learner if needed.
         if n_covariates > 0:
             assert covariate_net_hidden is not None
             self.c_net: Optional[nn.Sequential] = nn.Sequential(*build_mlp(
-                n_covariates, covariate_net_hidden, n_covariate_features
+                n_covariates, covariate_net_hidden, n_covariate_features,
+                add_input_layer_batchnorm=True
             ))
         else:
             self.c_net = None
@@ -483,15 +497,26 @@ def fit_dfiv(
         covariate_net_learning_rate=covariate_net_learning_rate,
     )
 
-    train_model(
-        train_dataset,
-        val_dataset,
-        model,
-        "val_loss",
-        output_dir,
-        "dfiv_model.ckpt",
-        batch_size, max_epochs, accelerator, wandb_project
-    )
+    # Cleanup weights if needed.
+    try:
+        os.remove(
+            os.path.join(output_dir, "linear_weights.pt")
+        )
+    except FileNotFoundError:
+        pass
+
+    try:
+        train_model(
+            train_dataset,
+            val_dataset,
+            model,
+            "val_loss",
+            output_dir,
+            "dfiv_model.ckpt",
+            batch_size, max_epochs, accelerator, wandb_project
+        )
+    except RuntimeError:
+        warn("Stopping at unsolvable configuration.")
 
     # Load the best model.
     filename = os.path.join(output_dir, "dfiv_model.ckpt")
