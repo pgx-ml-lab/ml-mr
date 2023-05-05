@@ -1,7 +1,8 @@
 {
     "sweep": {
         "max_runs": 3,
-        "run_output": "my_sweep_run_{run_id}"
+        "sweep_directory": "my_sweep_run",
+        "model": "deep_iv"
     },
     "dataset": {
         "filename": "../ml_mr/test_data/basic_model_data.csv.gz",
@@ -29,6 +30,11 @@
             "name": "outcome_weight_decay",
             "sampler": "list",
             "values": [0, 1e-2]
+        },
+        {
+            "name": "wandb_project",
+            "sampler": "literal",
+            "value": "ml_mr_sweeper"
         }
     ]
 }

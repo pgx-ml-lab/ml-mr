@@ -264,7 +264,7 @@ def main(args: argparse.Namespace) -> None:
         q=args.q,
         dataset=dataset,
         no_plot=args.no_plot,
-        sqr=args.sqr,
+        sqr=not args.no_sqr,
         wandb_project=args.wandb_project,
         **kwargs,
     )
@@ -284,7 +284,7 @@ def train_exposure_model(
     max_epochs: int,
     accelerator: Optional[str] = None,
     wandb_project: Optional[str] = None
-) -> None:
+) -> float:
     info("Training exposure model.")
     model = ExposureQuantileMLP(
         q=q,
@@ -296,7 +296,7 @@ def train_exposure_model(
         add_hidden_layer_batchnorm=True,
     )
 
-    train_model(
+    return train_model(
         train_dataset,
         val_dataset,
         model=model,
@@ -357,7 +357,7 @@ def fit_quantile_iv(
     output_dir: str = DEFAULTS["output_dir"],  # type: ignore
     validation_proportion: float = DEFAULTS["validation_proportion"],  # type: ignore # noqa: E501
     no_plot: bool = False,
-    sqr: bool = False,
+    sqr: bool = True,
     exposure_hidden: List[int] = DEFAULTS["exposure_hidden"],  # type: ignore
     exposure_learning_rate: float = DEFAULTS["exposure_learning_rate"],  # type: ignore # noqa: E501
     exposure_weight_decay: float = DEFAULTS["exposure_weight_decay"],  # type: ignore # noqa: E501
@@ -379,20 +379,18 @@ def fit_quantile_iv(
 
     # Metadata dictionary that will be saved alongside the results.
     meta = locals()
+    meta["model"] = "quantile_iv"
+    meta.update(dataset.exposure_descriptive_statistics())
     del meta["dataset"]  # We don't serialize the dataset.
 
     covars = dataset.save_covariables(output_dir)
-
-    min_x = torch.min(dataset.exposure).item()
-    max_x = torch.max(dataset.exposure).item()
-    domain = (min_x, max_x)
 
     # Split here into train and val.
     train_dataset, val_dataset = random_split(
         dataset, [1 - validation_proportion, validation_proportion]
     )
 
-    train_exposure_model(
+    exposure_val_loss = train_exposure_model(
         q=q,
         train_dataset=train_dataset,
         val_dataset=val_dataset,
@@ -407,6 +405,8 @@ def fit_quantile_iv(
         accelerator=accelerator,
         wandb_project=wandb_project
     )
+
+    meta["exposure_val_loss"] = exposure_val_loss
 
     exposure_network = ExposureQuantileMLP.load_from_checkpoint(
         os.path.join(output_dir, "exposure_network.ckpt")
@@ -470,7 +470,7 @@ def fit_quantile_iv(
     save_estimator_statistics(
         estimator,
         covars,
-        domain=domain,
+        domain=meta["domain"],
         output_prefix=os.path.join(output_dir, "causal_estimates"),
         alpha=0.1 if sqr else None
     )
@@ -609,8 +609,8 @@ def configure_argparse(parser) -> None:
     )
 
     parser.add_argument(
-        "--sqr",
-        help="Enable simultaneous quantile regression to estimate a "
+        "--no-sqr",
+        help="Disable simultaneous quantile regression to estimate a "
         "prediction interval.",
         action="store_true"
     )

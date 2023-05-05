@@ -83,7 +83,8 @@ def train_model(
             ),
             model_checkpoint,
         ],
-        logger=logger
+        logger=logger,
+        enable_progress_bar=os.environ.get("ML_MR_QUIET", "0") != "1"
     )
     trainer.fit(model, train_dataloader, val_dataloader)  # type: ignore
 

@@ -1,16 +1,11 @@
 from .core import MREstimator, MREstimatorWithUncertainty
 
-from . import bin_iv
 from . import deep_iv
 from . import quantile_iv
 from . import baselines
 from . import dfiv
 
 MODELS = {
-    "bin_iv": {
-        "estimate": bin_iv.estimate,
-        "load": bin_iv.load
-    },
     "quantile_iv": {
         "estimate": quantile_iv.estimate,
         "load": quantile_iv.load

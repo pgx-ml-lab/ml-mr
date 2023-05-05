@@ -39,7 +39,7 @@ DEFAULTS = {
     "n_gaussians": 5,
     "exposure_network_type": "mixture_density_net",
     "exposure_hidden": [128, 64],
-    "outcome_hidden": [32, 16],
+    "outcome_hidden": [64, 32],
     "exposure_learning_rate": 5e-4,
     "outcome_learning_rate": 5e-4,
     "exposure_batch_size": 10_000,
@@ -430,13 +430,11 @@ def fit_deep_iv(
 
     # Metadata dictionary that will be saved alongside the results.
     meta = locals()
+    meta["model"] = "deep_iv"
+    meta.update(dataset.exposure_descriptive_statistics())
     del meta["dataset"]  # We don't serialize the dataset.
 
     covars = dataset.save_covariables(output_dir)
-
-    min_x = torch.min(dataset.exposure).item()
-    max_x = torch.max(dataset.exposure).item()
-    domain = (min_x, max_x)
 
     # Split here into train and val.
     train_dataset, val_dataset = random_split(
@@ -518,7 +516,7 @@ def fit_deep_iv(
         json.dump(meta, f)
 
     save_estimator_statistics(
-        estimator, covars, domain=domain,
+        estimator, covars, domain=meta["domain"],
         output_prefix=os.path.join(output_dir, "causal_estimates"),
     )
 

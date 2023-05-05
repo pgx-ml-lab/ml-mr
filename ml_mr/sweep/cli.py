@@ -1,54 +1,17 @@
-"""Example simple sweep for DeepIV.
-
-{
-    "sweep": {
-        "max_runs": 3,
-        "run_output": "my_sweep_run_{run_id}"
-    },
-    "dataset": {
-        "filename": "../ml_mr/test_data/basic_model_data.csv.gz",
-        "sep": ",",
-        "exposure": "exposure",
-        "outcome": "outcome",
-        "instruments": ["v1", "v2"]
-    },
-    "parameters": [
-        {
-            "name": "exposure_learning_rate",
-            "sampler": "grid",
-            "start": 1e-4,
-            "stop": 0.01,
-            "n_values": 3,
-            "log": true
-        },
-        {
-            "name": "outcome_learning_rate",
-            "sampler": "random_uniform",
-            "low": 1e-4,
-            "high": 0.01
-        },
-        {
-            "name": "outcome_weight_decay",
-            "sampler": "list",
-            "values": [0, 1e-2]
-        }
-    ]
-}
-
-"""
-
-
 import os
 import sys
 import json
 import math
+import time
 import sqlite3
 import argparse
 import itertools
+import multiprocessing
 from typing import List, Iterator
 
 import numpy as np
 
+from ..estimation import MODELS
 from ..estimation.core import IVDataset
 from ..logging import debug, warn
 
@@ -157,6 +120,16 @@ class ListSampler(DeterministicSampler):
             yield v
 
 
+@sampler_mode("literal")
+class LiteralSampler(ListSampler):
+    def __init__(self, value):
+        if type(value) not in {int, float, str}:
+            raise ValueError(
+                "Literal sampler only supported for int, float and str."
+            )
+        super().__init__([value])
+
+
 @sampler_mode("random_uniform")
 class RandomUniform(StochasticSampler):
     def __init__(self, low, high, log=False):
@@ -185,13 +158,15 @@ class RandomUniform(StochasticSampler):
 class SweepConfig:
     def __init__(
         self,
-        dataset: IVDataset,
-        run_output: str,
+        dataset_config: dict,
+        model: str,
+        sweep_directory: str,
         parameters: List["SweepParameter"],
         max_runs: int
     ):
-        self.dataset = dataset
-        self.run_output = run_output
+        self.dataset_config = dataset_config
+        self.model = model
+        self.sweep_directory = sweep_directory
         self.parameters = parameters
         self.max_runs = max_runs
 
@@ -205,11 +180,10 @@ class SweepConfig:
     def print(self):
         print("*** Sweep configuration ***")
         print("[dataset]")
-        print(self.dataset)
+        print(self.dataset_config)
         print()
 
         print("[sweep_config]")
-        print(f"=> Runs will be saved following template: '{self.run_output}'")
         print(f"=> Max number of runs: '{self.max_runs}'")
         print()
 
@@ -261,10 +235,13 @@ def parse_config(filename: str) -> SweepConfig:
     # Parse the sweep config.
     sweep_conf = config.get("sweep", {})
     max_runs = sweep_conf.get("max_runs", 10_000)  # Default max is 10k runs.
-    run_output = sweep_conf.get("run_output", "{run_id}_ml_mr_sweep")
+    sweep_directory = sweep_conf.get("sweep_directory", "ml_mr_sweep")
+    model = sweep_conf["model"]
 
-    # Parse the dataset.
-    dataset = IVDataset.from_json_configuration(config["dataset"])
+    if model not in MODELS:
+        raise ValueError(
+            f"Unknown model '{model}'. Accepted values: {list(MODELS.keys())}"
+        )
 
     # Parse the parameters.
     if "parameters" not in config:
@@ -277,13 +254,36 @@ def parse_config(filename: str) -> SweepConfig:
     for parameter in config["parameters"]:
         parameters.append(parse_parameter(parameter))
 
-    return SweepConfig(dataset, run_output, parameters, max_runs)
+    return SweepConfig(
+        config["dataset"], model, sweep_directory, parameters, max_runs
+    )
 
 
 def create_sweep_database(sweep_config: SweepConfig) -> str:
     filename = "ml_mr_sweep_runs.db"
     con = sqlite3.connect(filename)
     cur = con.cursor()
+
+    # Create the table containing the dataset information.
+    cur.execute("create table dataset (json_conf text);")
+    cur.execute(
+        "insert into dataset values (?)",
+        (json.dumps(sweep_config.dataset_config), )
+    )
+    con.commit()
+
+    # Create the table with the sweep metadata.
+    cur.execute(
+        "create table meta ("
+        "  model text,"
+        "  sweep_directory text"
+        ");"
+    )
+    cur.execute(
+        "insert into meta values (?, ?)",
+        (sweep_config.model, sweep_config.sweep_directory)
+    )
+    con.commit()
 
     # Create the parameters table.
     create_params = (
@@ -306,7 +306,8 @@ def create_sweep_database(sweep_config: SweepConfig) -> str:
         "create table run_status (\n"
         "  run_id integer primary key,\n"
         "  done boolean default false,\n"
-        "  in_progress boolean default false\n"
+        "  in_progress boolean default false,\n"
+        "  elapsed float\n"
         ");"
     )
 
@@ -351,7 +352,7 @@ def create_sweep_database(sweep_config: SweepConfig) -> str:
         parameter_table = zip(
             itertools.count(0),
             *[param.get_instances(n_runs)
-                for param in sweep_config.parameters]
+              for param in sweep_config.parameters]
         )
 
     n_params = len(sweep_config.parameters)
@@ -367,16 +368,125 @@ def create_sweep_database(sweep_config: SweepConfig) -> str:
     # Create the entries in run status.
     cur.execute(
         "insert into run_status "
-        "  select run_id, false, false "
+        "  select run_id, false, false, NULL "
         "  from run_parameters;"
     )
     con.commit()
+    con.close()
 
     return "ml_mr_sweep_runs.db"
 
 
+def _fetchone_as_dict(cur: sqlite3.Cursor) -> dict:
+    return {k[0]: v for k, v in zip(cur.description, cur.fetchone())}
+
+
+def worker(db_filename: str, db_lock: multiprocessing.synchronize.Lock):
+    con = sqlite3.connect(db_filename)
+    cur = con.cursor()
+
+    os.environ["ML_MR_QUIET"] = "1"
+
+    # Get the config.
+    db_lock.acquire()
+    try:
+        cur.execute("select * from meta;")
+        meta = _fetchone_as_dict(cur)
+
+        cur.execute("select json_conf from dataset;")
+        dataset_conf = json.loads(cur.fetchone()[0])
+    finally:
+        db_lock.release()
+
+    dataset = IVDataset.from_json_configuration(dataset_conf)
+    fit_func = MODELS[meta["model"]]["estimate"]
+
+    while True:
+        db_lock.acquire()
+        try:
+            # Get a task from the DB.
+            cur.execute(
+                "select run_id from run_status "
+                "where (not done) and (not in_progress) "
+                "limit 1;"
+            )
+
+            run_id_tu = cur.fetchone()
+            if run_id_tu is None:
+                # No more pendings tasks.
+                debug("Process exiting, no more runs pending.")
+                con.close()
+                return
+
+            run_id = run_id_tu[0]
+
+            cur.execute(
+                "update run_status "
+                "set in_progress=true "
+                "where run_id=?", (run_id, )
+            )
+            con.commit()
+
+            cur.execute(
+                "select * from run_parameters where run_id=?",
+                (run_id, )
+            )
+
+            task = _fetchone_as_dict(cur)
+            del task["run_id"]
+
+        finally:
+            db_lock.release()
+
+        # Do the work (in a subdirectory for isolation).
+        root_dir = os.getcwd()
+        dir_name = os.path.join(meta["sweep_directory"], str(run_id))
+        os.makedirs(dir_name)
+        os.chdir(dir_name)
+        try:
+            t0 = time.time()
+            fit_func(  # type: ignore
+                dataset=dataset,
+                output_dir=f"estimate_run_{run_id}",
+                accelerator="cpu",
+                **task
+            )
+            t1 = time.time()
+            delta_t = t1 - t0
+        finally:
+            os.chdir(root_dir)
+
+        # Mark task as done.
+        db_lock.acquire()
+        try:
+            cur.execute(
+                f"update run_status "
+                f" set in_progress=false, done=true, elapsed={delta_t} "
+                f"where run_id=?", (run_id, )
+            )
+            con.commit()
+        finally:
+            db_lock.release()
+
+
 def execute_runs(sweep_db_filename: str, n_workers: int):
-    pass
+    proc_ctx = multiprocessing.get_context("spawn")
+    processes = []
+
+    db_lock = proc_ctx.Lock()
+
+    for _ in range(n_workers):
+        proc = proc_ctx.Process(
+            target=worker,
+            args=[sweep_db_filename, db_lock]
+        )
+        proc.start()
+        processes.append(proc)
+
+    for proc in processes:
+        proc.join()
+
+    debug("Done all!")
 
 
 def main():

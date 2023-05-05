@@ -2,7 +2,7 @@ import argparse
 import itertools
 import os
 from typing import (Callable, Iterable, List, Literal, Optional, Tuple,
-                    TypeVar, Union)
+                    TypeVar, Union, Dict, Any)
 
 import numpy as np
 import pandas as pd
@@ -194,6 +194,17 @@ class IVDataset(Dataset):
 
     def __len__(self) -> int:
         return self.ivs.size(0)
+
+    def exposure_descriptive_statistics(self) -> Dict[str, Any]:
+        x = self.exposure.numpy()
+
+        min = np.min(x)
+        max = np.max(x)
+
+        return {
+            "domain": [min, max],
+            "exposure_95_percentile": np.percentile(x, [2.5, 97.5]).tolist()
+        }
 
     def n_outcomes(self) -> int:
         """Counts the number of outcomes."""
