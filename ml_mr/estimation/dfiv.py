@@ -22,7 +22,7 @@ import numpy as np
 n = 500_000
 U = np.random.normal(size=n)
 Z = np.random.normal(size=n)
-X = 0.5*Z + 0.2*U + np.random.normal(scale=0.5, size=n)
+X = 0.9*Z + 0.1*U + np.random.normal(scale=0.1, size=n)
 print(np.percentile(X, [1, 99]))
 
 y_x = lambda x: 0.8*x + 0.6*np.sin(5*x) + 0.05*x**3

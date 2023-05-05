@@ -198,8 +198,8 @@ class IVDataset(Dataset):
     def exposure_descriptive_statistics(self) -> Dict[str, Any]:
         x = self.exposure.numpy()
 
-        min = np.min(x)
-        max = np.max(x)
+        min = np.min(x).item()
+        max = np.max(x).item()
 
         return {
             "domain": [min, max],
