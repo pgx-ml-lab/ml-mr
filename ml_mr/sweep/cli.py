@@ -3,17 +3,18 @@ import sys
 import json
 import math
 import time
+import shutil
 import sqlite3
 import argparse
 import itertools
 import multiprocessing
-from typing import List, Iterator
+from typing import List, Iterator, Union
 
 import numpy as np
 
 from ..estimation import MODELS
 from ..estimation.core import IVDataset
-from ..logging import debug, warn
+from ..logging import debug, warn, info
 
 
 SAMPLERS = {}
@@ -200,7 +201,8 @@ def parse_args(argv):
     parser.add_argument(
         "configuration",
         type=str,
-        help="Path to JSON configuration file."
+        help="Path to JSON configuration file or a ml-mr sweep database in "
+             "which case the failed runs will be attempted again."
     )
 
     parser.add_argument(
@@ -307,7 +309,8 @@ def create_sweep_database(sweep_config: SweepConfig) -> str:
         "  run_id integer primary key,\n"
         "  done boolean default false,\n"
         "  in_progress boolean default false,\n"
-        "  elapsed float\n"
+        "  elapsed float,\n"
+        "  failed boolean default false"
         ");"
     )
 
@@ -368,7 +371,7 @@ def create_sweep_database(sweep_config: SweepConfig) -> str:
     # Create the entries in run status.
     cur.execute(
         "insert into run_status "
-        "  select run_id, false, false, NULL "
+        "  select run_id, false, false, NULL, false "
         "  from run_parameters;"
     )
     con.commit()
@@ -381,11 +384,19 @@ def _fetchone_as_dict(cur: sqlite3.Cursor) -> dict:
     return {k[0]: v for k, v in zip(cur.description, cur.fetchone())}
 
 
-def worker(db_filename: str, db_lock: multiprocessing.synchronize.Lock):
+def worker(
+    db_filename: str,
+    db_lock: multiprocessing.synchronize.Lock,
+    stop_flag
+):
     con = sqlite3.connect(db_filename)
     cur = con.cursor()
 
     os.environ["ML_MR_QUIET"] = "1"
+
+    # We only allow offline mode for wandb otherwise the directory isolation
+    # seems to cause problems.
+    os.environ["WANDB_MODE"] = "offline"
 
     # Get the config.
     db_lock.acquire()
@@ -402,6 +413,10 @@ def worker(db_filename: str, db_lock: multiprocessing.synchronize.Lock):
     fit_func = MODELS[meta["model"]]["estimate"]
 
     while True:
+        if stop_flag.value:
+            debug("Process exiting due to stop flag.")
+            return
+
         db_lock.acquire()
         try:
             # Get a task from the DB.
@@ -443,6 +458,8 @@ def worker(db_filename: str, db_lock: multiprocessing.synchronize.Lock):
         dir_name = os.path.join(meta["sweep_directory"], str(run_id))
         os.makedirs(dir_name)
         os.chdir(dir_name)
+        failed = "false"
+        delta_t: Union[str, float] = "null"
         try:
             t0 = time.time()
             fit_func(  # type: ignore
@@ -453,6 +470,9 @@ def worker(db_filename: str, db_lock: multiprocessing.synchronize.Lock):
             )
             t1 = time.time()
             delta_t = t1 - t0
+        except:  # noqa: E722
+            failed = "true"
+
         finally:
             os.chdir(root_dir)
 
@@ -461,7 +481,11 @@ def worker(db_filename: str, db_lock: multiprocessing.synchronize.Lock):
         try:
             cur.execute(
                 f"update run_status "
-                f" set in_progress=false, done=true, elapsed={delta_t} "
+                f"  set "
+                f"    in_progress=false, "
+                f"    done=true, "
+                f"    elapsed={delta_t}, "
+                f"    failed={failed} "
                 f"where run_id=?", (run_id, )
             )
             con.commit()
@@ -474,27 +498,80 @@ def execute_runs(sweep_db_filename: str, n_workers: int):
     processes = []
 
     db_lock = proc_ctx.Lock()
+    stop_flag = proc_ctx.Value("B", 0)
 
     for _ in range(n_workers):
         proc = proc_ctx.Process(
             target=worker,
-            args=[sweep_db_filename, db_lock]
+            args=[sweep_db_filename, db_lock, stop_flag]
         )
         proc.start()
         processes.append(proc)
 
-    for proc in processes:
-        proc.join()
+    try:
+        for proc in processes:
+            proc.join()
+    except KeyboardInterrupt:
+        debug("Catching interrupt. Closing processes.")
+        stop_flag.value = 1  # type: ignore
+
+        # Try joining a second time after requesting shutdown.
+        for proc in processes:
+            proc.join()
+    finally:
+        # If there are tasks still marked as in_progress after all workers have
+        # died, we mark them as failed.
+        con = sqlite3.connect(sweep_db_filename)
+        cur = con.cursor()
+
+        cur.execute(
+            "update run_status "
+            "set failed=true, in_progress=false where in_progress=true;"
+        )
+        con.commit()
+        con.close()
 
     debug("Done all!")
 
 
+def resume_sweep(db_filename: str, n_workers: int):
+    info("Resuming sweep from database.")
+
+    con = sqlite3.connect(db_filename)
+    cur = con.cursor()
+
+    cur.execute("select * from meta;")
+    meta = _fetchone_as_dict(cur)
+
+    # Get the failed runs to cleanup.
+    cur.execute("select run_id from run_status where failed=true;")
+    failed_run_ids = [tu[0] for tu in cur.fetchall()]
+
+    for run_id in failed_run_ids:
+        dir_name = os.path.join(meta["sweep_directory"], str(run_id))
+        debug(f"Cleaning up failed run '{dir_name}'.")
+        shutil.rmtree(dir_name)
+
+    cur.execute(
+        "update run_status "
+        "set failed=false, done=false where failed=true;"
+    )
+    con.commit()
+    con.close()
+
+    return execute_runs(db_filename, n_workers)
+
+
 def main():
     args = parse_args(sys.argv[2:])
+
+    # Check if args.configuration is a database.
+    with open(args.configuration, "rb") as f:
+        if f.read(16) == b"SQLite format 3\x00":
+            return resume_sweep(args.configuration, args.n_workers)
+
+    # Create and run sweep from configuration.
     conf = parse_config(args.configuration)
-
     conf.print()
-
     database = create_sweep_database(conf)
-
     execute_runs(database, args.n_workers)
