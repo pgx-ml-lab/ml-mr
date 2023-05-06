@@ -3,7 +3,6 @@ Command-line interface entry-point for all tasks related to model evaluation.
 
 # ml-mr evaluate
 #     --input path \
-#     --model bin_iv \
 #     --true-function 'my_file.py:true_function' \
 
 """
@@ -11,6 +10,7 @@ Command-line interface entry-point for all tasks related to model evaluation.
 from typing import Tuple, Callable
 import sys
 import os
+import json
 import argparse
 
 import torch
@@ -18,7 +18,7 @@ import numpy as np
 
 from ..estimation import MODELS, MREstimator, MREstimatorWithUncertainty
 from .metrics import mse, mean_prediction_interval_absolute_width
-from ..logging import warn
+from ..logging import warn, info
 
 
 def parse_args(argv):
@@ -34,15 +34,6 @@ def parse_args(argv):
     )
 
     parser.add_argument(
-        "--model",
-        required=True,
-        type=str,
-        choices=list(MODELS.keys()),
-        help="Name of the estimator so that the results can be loaded "
-             "correctly."
-    )
-
-    parser.add_argument(
         "--true-function",
         required=True,
         type=str,
@@ -54,7 +45,7 @@ def parse_args(argv):
 
     parser.add_argument(
         "--domain",
-        default="-3,3",
+        default=None,
         type=str,
         help="Domain used to evaluate metrics such as the mean squared error."
     )
@@ -72,6 +63,8 @@ def plot(
     estimator: MREstimator,
     true_function: Callable[[torch.Tensor], torch.Tensor],
     domain: Tuple[float, float] = (-3, 3),
+    label: str = "Predicted Y",
+    plot_structural: bool = True,
     n_points: int = 5000
 ):
     import matplotlib.pyplot as plt
@@ -90,17 +83,21 @@ def plot(
 
     true_y = true_function(xs)
 
-    plt.scatter(
-        xs.numpy(),
-        true_y.numpy().reshape(-1),
-        s=1,
-        label="True Y"
-    )
+    if plot_structural:
+        plt.plot(
+            xs.numpy(),
+            true_y.numpy().reshape(-1),
+            ls="--",
+            color="#9C0D00",
+            lw=1,
+            label="True Y"
+        )
+
     plt.scatter(
         xs.numpy(),
         y_hat.numpy().reshape(-1),
         s=1,
-        label="Predicted Y"
+        label=label
     )
     if uncertainty:
         plt.fill_between(
@@ -110,10 +107,6 @@ def plot(
             zorder=-1,
             color="#eeeeee"
         )
-
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
 
 
 def main():
@@ -141,12 +134,41 @@ def main():
         )
 
     # Parse domain.
-    domain_lower, domain_upper = [float(i) for i in args.domain.split(",")]
+    if args.domain is not None:
+        domain_lower, domain_upper = [float(i) for i in args.domain.split(",")]
+    else:
+        domain_lower = None
+        domain_upper = None
+
+    if args.plot:
+        # Setup figure.
+        import matplotlib.pyplot as plt
+        plt.figure(figsize=(8, 6))
 
     # Load MREstimator.
+    n_plotted = 0
     for input in args.input:
+        # Try to detect model type.
+        meta_filename = os.path.join(input, "meta.json")
         try:
-            estimator = MODELS[args.model]["load"](input)
+            with open(meta_filename, "rt") as f:
+                meta = json.load(f)
+        except FileNotFoundError:
+            warn(
+               f"Could not find metadata for ml-mr fitted model in "
+               f"'{input}'. Ignoring."
+            )
+            continue
+
+        # Set domain if it wasn't set explicitly.
+        if domain_lower is None:
+            assert domain_upper is None
+            domain_lower, domain_upper = meta["domain"]
+
+        loader = MODELS[meta["model"]]["load"]
+
+        try:
+            estimator = loader(input)
         except FileNotFoundError:
             warn(f"Couldn't load model '{input}'. Ignoring.")
             continue
@@ -166,11 +188,22 @@ def main():
         print()
 
         if args.plot:
-            if len(args.input) == 1:
+            if n_plotted == 11:
+                warn("Not plotting more than 10 curves in batch mode.")
+            elif n_plotted > 11:
+                pass
+            else:
                 plot(
                     estimator,
                     true_function,
-                    domain=(domain_lower, domain_upper)
+                    domain=(domain_lower, domain_upper),
+                    label=input,
+                    plot_structural=True if n_plotted == 0 else False
                 )
-            else:
-                warn("Plotting disabled in batch mode.")
+                n_plotted += 1
+
+    if args.plot:
+        # Finalize and show figure.
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
