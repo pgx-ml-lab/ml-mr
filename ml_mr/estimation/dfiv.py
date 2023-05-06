@@ -48,7 +48,7 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 from torch.utils.data import random_split, DataLoader, Dataset
 
-from ..utils.linear import ridge_fit_predict, ridge_regression
+from ..utils.linear import ridge_fit_predict
 from ..utils.nn import build_mlp
 from ..utils.training import train_model
 from ..logging import warn
@@ -58,22 +58,22 @@ from .core import IVDataset, MREstimator
 DEFAULTS = {
     "output_dir": "dfiv_estimate",
     "validation_proportion": 0.2,
-    "ridge_lambda_1": 0.9,
-    "ridge_lambda_2": 0.999,
+    "ridge_lambda1": 0.9,
+    "ridge_lambda2": 0.999,
     "n_instrument_features": 3,
     "n_exposure_features": 3,
     "n_covariate_features": 5,
-    "n_updates_stage1": 40,
+    "n_updates_stage1": 20,
     "n_updates_covariate_net": 1,
     "n_updates_stage2": 1,
-    "instrument_net_hidden": [128, 64],
-    "exposure_net_hidden": [128, 64],
-    "covariate_net_hidden": [128, 64],
+    "instrument_net_hidden": [64, 32],
+    "exposure_net_hidden": [64, 32],
+    "covariate_net_hidden": [64, 32],
     "instrument_net_learning_rate": 0.01,
     "exposure_net_learning_rate": 0.01,
     "covariate_net_learning_rate": 0.01,
     "batch_size": 15_000,
-    "max_epochs": 50,
+    "max_epochs": 60,
     "accelerator": "gpu" if (
         torch.cuda.is_available() and torch.cuda.device_count() > 0
     ) else "cpu",
@@ -184,13 +184,11 @@ class DFIVModel(pl.LightningModule):
         # Instrument feature learner.
         self.z_net = nn.Sequential(*build_mlp(
             n_instruments, instrument_net_hidden, n_instrument_features,
-            add_hidden_layer_batchnorm=True
         ))
 
         # Exposure feature learner.
         self.x_net = nn.Sequential(*build_mlp(
             n_exposures, exposure_net_hidden, n_exposure_features,
-            add_input_layer_batchnorm=True
         ))
 
         # Covariate feature learner if needed.
@@ -198,7 +196,6 @@ class DFIVModel(pl.LightningModule):
             assert covariate_net_hidden is not None
             self.c_net: Optional[nn.Sequential] = nn.Sequential(*build_mlp(
                 n_covariates, covariate_net_hidden, n_covariate_features,
-                add_input_layer_batchnorm=True
             ))
         else:
             self.c_net = None
@@ -444,8 +441,8 @@ def fit_dfiv(
     instrument_net_hidden: List[int] = DEFAULTS["instrument_net_hidden"],  # type: ignore # noqa: E501
     exposure_net_hidden: List[int] = DEFAULTS["exposure_net_hidden"],  # type: ignore # noqa: E501
     covariate_net_hidden: Optional[List[int]] = DEFAULTS["covariate_net_hidden"],  # type: ignore # noqa: E501
-    ridge_lambda1: float = DEFAULTS["ridge_lambda_1"],  # type: ignore
-    ridge_lambda2: float = DEFAULTS["ridge_lambda_2"],  # type: ignore
+    ridge_lambda1: float = DEFAULTS["ridge_lambda1"],  # type: ignore
+    ridge_lambda2: float = DEFAULTS["ridge_lambda2"],  # type: ignore
     n_updates_stage1: int = DEFAULTS["n_updates_stage1"],  # type: ignore # noqa: E501
     n_updates_covariate_net: int = DEFAULTS["n_updates_covariate_net"],  # type: ignore # noqa: E501
     n_updates_stage2: int = DEFAULTS["n_updates_stage2"],  # type: ignore # noqa: E501
@@ -462,14 +459,12 @@ def fit_dfiv(
         os.makedirs(output_dir)
 
     # Metadata dictionary that will be saved alongside the results.
-    meta = locals()
+    meta = dict(locals())
+    meta["model"] = "dfiv"
+    meta.update(dataset.exposure_descriptive_statistics())
     del meta["dataset"]  # We don't serialize the dataset.
 
     covars = dataset.save_covariables(output_dir)
-
-    min_x = torch.min(dataset.exposure).item()
-    max_x = torch.max(dataset.exposure).item()
-    domain = (min_x, max_x)
 
     # Split here into train and val.
     train_dataset, val_dataset = random_split(
@@ -506,7 +501,7 @@ def fit_dfiv(
         pass
 
     try:
-        train_model(
+        stage2_val_loss = train_model(
             train_dataset,
             val_dataset,
             model,
@@ -515,8 +510,10 @@ def fit_dfiv(
             "dfiv_model.ckpt",
             batch_size, max_epochs, accelerator, wandb_project
         )
+        meta["stage2_val_loss"] = stage2_val_loss
     except RuntimeError:
         warn("Stopping at unsolvable configuration.")
+        return
 
     # Load the best model.
     filename = os.path.join(output_dir, "dfiv_model.ckpt")
@@ -533,6 +530,14 @@ def fit_dfiv(
          "betas2": _2sls_results["betas2"]},
         os.path.join(output_dir, "linear_weights.pt")
     )
+
+    with open(os.path.join(output_dir, "meta.json"), "wt") as f:
+        json.dump(meta, f)
+
+    if wandb_project is not None:
+        import wandb
+        # TODO log artifact.
+        wandb.finish()
 
 
 class DFIVEstimator(MREstimator):

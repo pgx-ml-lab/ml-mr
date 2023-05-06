@@ -378,7 +378,7 @@ def fit_quantile_iv(
         os.makedirs(output_dir)
 
     # Metadata dictionary that will be saved alongside the results.
-    meta = locals()
+    meta = dict(locals())
     meta["model"] = "quantile_iv"
     meta.update(dataset.exposure_descriptive_statistics())
     del meta["dataset"]  # We don't serialize the dataset.
@@ -484,6 +484,7 @@ def fit_quantile_iv(
         )
         artifact.add_dir(output_dir)
         wandb.log_artifact(artifact)
+        wandb.finish()
 
     return estimator
 

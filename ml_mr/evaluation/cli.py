@@ -9,6 +9,7 @@ Command-line interface entry-point for all tasks related to model evaluation.
 
 from typing import Tuple, Callable
 import sys
+import csv
 import os
 import json
 import argparse
@@ -51,6 +52,21 @@ def parse_args(argv):
     )
 
     parser.add_argument(
+        "--meta-keys",
+        nargs="*",
+        help="Keys to extract from the meta.json file of the fit. It will be "
+             "printed in CSV format.",
+        default=[]
+    )
+
+    parser.add_argument(
+        "--plot-max-lines",
+        type=int,
+        default=5,
+        help="Maximum number of estimates shown on the plot."
+    )
+
+    parser.add_argument(
         "--plot",
         action="store_true",
         help="Plot the true function and prediction together."
@@ -89,14 +105,14 @@ def plot(
             true_y.numpy().reshape(-1),
             ls="--",
             color="#9C0D00",
-            lw=1,
-            label="True Y"
+            lw=2,
+            label="True Y",
+            zorder=2
         )
 
-    plt.scatter(
+    plt.plot(
         xs.numpy(),
         y_hat.numpy().reshape(-1),
-        s=1,
         label=label
     )
     if uncertainty:
@@ -111,6 +127,7 @@ def plot(
 
 def main():
     args = parse_args(sys.argv[2:])
+    writer = csv.writer(sys.stdout)
 
     # Load the true function.
     if args.true_function.startswith("lambda"):
@@ -145,6 +162,11 @@ def main():
         import matplotlib.pyplot as plt
         plt.figure(figsize=(8, 6))
 
+    # Header
+    header = ["filename", "mse", "pred_interval_width"]
+    header.extend(args.meta_keys)
+    writer.writerow(header)
+
     # Load MREstimator.
     n_plotted = 0
     for input in args.input:
@@ -159,6 +181,12 @@ def main():
                f"'{input}'. Ignoring."
             )
             continue
+
+        meta_values = []
+        if args.meta_keys:
+            meta_values = [
+                str(meta.get(key, "")) for key in args.meta_keys
+            ]
 
         # Set domain if it wasn't set explicitly.
         if domain_lower is None:
@@ -177,20 +205,26 @@ def main():
             estimator, true_function, domain=(domain_lower, domain_upper)
         )
 
-        print(input, cur_mse, sep=",", end="")
-
+        row = [input, cur_mse]
         if isinstance(estimator, MREstimatorWithUncertainty):
             width = mean_prediction_interval_absolute_width(
                 estimator, [domain_lower, domain_upper], 0.1
             )
-            print(f",{width}", end="")
+            row.append(width)
+        else:
+            row.append("")  # No prediction interval width
 
-        print()
+        row.extend(meta_values)
+        writer.writerow(row)
 
         if args.plot:
-            if n_plotted == 11:
-                warn("Not plotting more than 10 curves in batch mode.")
-            elif n_plotted > 11:
+            max_plots = args.plot_max_lines
+            if n_plotted == max_plots:
+                warn(
+                    f"Not plotting more than {max_plots} curves in batch mode."
+                )
+                n_plotted += 1  # To avoid printing warning multiple times.
+            elif n_plotted > max_plots:
                 pass
             else:
                 plot(
@@ -204,6 +238,8 @@ def main():
 
     if args.plot:
         # Finalize and show figure.
-        plt.legend()
+        plt.xticks(fontsize=16)
+        plt.yticks(fontsize=16)
+        plt.legend(prop={"size": 14})
         plt.tight_layout()
         plt.show()
