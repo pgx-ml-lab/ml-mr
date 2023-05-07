@@ -37,7 +37,7 @@ def main():
 
 def print_usage():
     print(
-        "usage: ml-mr {estimation,evaluation} [-h]",
+        "usage: ml-mr {estimation,evaluation,sweep} [-h]",
         file=sys.stderr
     )
     sys.exit(1)

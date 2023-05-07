@@ -6,6 +6,7 @@ import time
 import shutil
 import sqlite3
 import argparse
+import random
 import itertools
 import multiprocessing
 from typing import List, Iterator, Union
@@ -211,6 +212,11 @@ def parse_args(argv):
         default=max(os.cpu_count() - 2, 1)
     )
 
+    parser.add_argument(
+        "--create-db-only",
+        action="store_true"
+    )
+
     return parser.parse_args(argv)
 
 
@@ -318,11 +324,18 @@ def create_sweep_database(sweep_config: SweepConfig) -> str:
     if sweep_config.stochastic:
         debug("Generating parameter table for stochastic sweep.")
 
-        # Sample up to max runs.
+        param_samples = []
+        for param in sweep_config.parameters:
+            samples = list(param.get_instances(sweep_config.max_runs))
+
+            # Ensure deterministic samplers also have random order.
+            random.shuffle(samples)
+
+            param_samples.append(samples)
+
         parameter_table: Iterator = zip(
             itertools.count(0),
-            *[param.get_instances(sweep_config.max_runs)
-              for param in sweep_config.parameters]
+            *param_samples
         )
 
         parameter_table = itertools.islice(
@@ -347,16 +360,18 @@ def create_sweep_database(sweep_config: SweepConfig) -> str:
                 f"sweep config to avoid this."
             )
 
-            n_runs = min(expected_n_runs, sweep_config.max_runs)
+        def take(iterator, n_elements):
+            for i, element in enumerate(iterator):
+                if i >= n_elements:
+                    break
+                yield element
 
-        else:
-            n_runs = expected_n_runs
-
-        parameter_table = zip(
-            itertools.count(0),
-            *[param.get_instances(n_runs)
-              for param in sweep_config.parameters]
-        )
+        parameter_table = take((
+            (i,) + params for i, params in enumerate(itertools.product(*[
+                param.get_instances(param.sampler.n_elements)  # type: ignore
+                for param in sweep_config.parameters
+            ]))
+        ), sweep_config.max_runs)
 
     n_params = len(sweep_config.parameters)
     # Note we have an extra parameter for the run_id.
@@ -568,10 +583,20 @@ def main():
     # Check if args.configuration is a database.
     with open(args.configuration, "rb") as f:
         if f.read(16) == b"SQLite format 3\x00":
+            if args.create_db_only:
+                raise ValueError(
+                    "Database provided by ml-mr sweep called with "
+                    "--create-db-only."
+                )
+
             return resume_sweep(args.configuration, args.n_workers)
 
     # Create and run sweep from configuration.
     conf = parse_config(args.configuration)
     conf.print()
     database = create_sweep_database(conf)
+
+    if args.create_db_only:
+        return
+
     execute_runs(database, args.n_workers)
