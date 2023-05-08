@@ -262,7 +262,7 @@ def main(args: argparse.Namespace) -> None:
     fit_quantile_iv(
         q=args.q,
         dataset=dataset,
-        no_plot=args.no_plot,
+        fast=args.fast,
         sqr=not args.no_sqr,
         wandb_project=args.wandb_project,
         **kwargs,
@@ -355,7 +355,7 @@ def fit_quantile_iv(
     dataset: IVDataset,
     output_dir: str = DEFAULTS["output_dir"],  # type: ignore
     validation_proportion: float = DEFAULTS["validation_proportion"],  # type: ignore # noqa: E501
-    no_plot: bool = False,
+    fast: bool = False,
     sqr: bool = True,
     exposure_hidden: List[int] = DEFAULTS["exposure_hidden"],  # type: ignore
     exposure_learning_rate: float = DEFAULTS["exposure_learning_rate"],  # type: ignore # noqa: E501
@@ -370,7 +370,7 @@ def fit_quantile_iv(
     outcome_max_epochs: int = DEFAULTS["outcome_max_epochs"],  # type: ignore
     outcome_add_input_batchnorm: bool = DEFAULTS["outcome_add_input_batchnorm"],  # type: ignore # noqa: E501
     accelerator: str = DEFAULTS["accelerator"],  # type: ignore
-    wandb_project: Optional[str] = None
+    wandb_project: Optional[str] = None,
 ) -> QuantileIVEstimator:
     # Create output directory if needed.
     if not os.path.isdir(output_dir):
@@ -413,7 +413,7 @@ def fit_quantile_iv(
 
     exposure_network.freeze()
 
-    if not no_plot:
+    if not fast:
         plot_exposure_model(
             exposure_network,
             val_dataset,
@@ -466,13 +466,14 @@ def fit_quantile_iv(
     with open(os.path.join(output_dir, "meta.json"), "wt") as f:
         json.dump(meta, f)
 
-    save_estimator_statistics(
-        estimator,
-        covars,
-        domain=meta["domain"],
-        output_prefix=os.path.join(output_dir, "causal_estimates"),
-        alpha=0.1 if sqr else None
-    )
+    if not fast:
+        save_estimator_statistics(
+            estimator,
+            covars,
+            domain=meta["domain"],
+            output_prefix=os.path.join(output_dir, "causal_estimates"),
+            alpha=0.1 if sqr else None
+        )
 
     if wandb_project is not None:
         import wandb
@@ -547,7 +548,7 @@ def save_estimator_statistics(
     alpha: Optional[float] = None
 ):
     # Save the causal effect at over the domain.
-    xs = torch.linspace(domain[0], domain[1], 1000)
+    xs = torch.linspace(domain[0], domain[1], 500)
 
     if estimator.outcome_network.hparams.sqr and alpha:  # type: ignore
         assert isinstance(estimator, QuantileIVEstimatorWithUncertainty)
@@ -603,8 +604,8 @@ def configure_argparse(parser) -> None:
     parser.add_argument("--output-dir", default=DEFAULTS["output_dir"])
 
     parser.add_argument(
-        "--no-plot",
-        help="Disable plotting of diagnostics.",
+        "--fast",
+        help="Disable plotting and logging of causal effects.",
         action="store_true",
     )
 

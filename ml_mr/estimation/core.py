@@ -281,6 +281,17 @@ class IVDataset(Dataset):
 
     @staticmethod
     def from_json_configuration(configuration) -> "IVDataset":
+        allowed_keys = {
+            "filename", "sep", "exposure", "outcome", "instruments",
+            "covariables"
+        }
+
+        bad_keys = set(configuration.keys()) - allowed_keys
+        if bad_keys:
+            raise ValueError(
+                f"Invalid dataset configuration parameter(s): {bad_keys}"
+            )
+
         data = pd.read_csv(
             configuration["filename"],
             sep=configuration.get("sep", "\t")

@@ -108,6 +108,8 @@ class ListSampler(DeterministicSampler):
             db_type = "integer"
         elif any([isinstance(e, float) for e in values]):
             db_type = "float"
+        elif any([isinstance(e, bool) for e in values]):
+            db_type = "boolean"
         elif all([isinstance(e, str) for e in values]):
             db_type = "text"
         else:
@@ -125,9 +127,9 @@ class ListSampler(DeterministicSampler):
 @sampler_mode("literal")
 class LiteralSampler(ListSampler):
     def __init__(self, value):
-        if type(value) not in {int, float, str}:
+        if type(value) not in {int, float, str, bool}:
             raise ValueError(
-                "Literal sampler only supported for int, float and str."
+                "Literal sampler only supported for int, float, bool and str."
             )
         super().__init__([value])
 
