@@ -72,6 +72,13 @@ def parse_args(argv):
         help="Plot the true function and prediction together."
     )
 
+    parser.add_argument(
+        "--plot-filename",
+        default=None,
+        type=str,
+        help="Output filename to save the plot to disk."
+    )
+
     return parser.parse_args(argv)
 
 
@@ -242,4 +249,11 @@ def main():
         plt.yticks(fontsize=16)
         plt.legend(prop={"size": 14})
         plt.tight_layout()
-        plt.show()
+
+        if args.plot_filename is None:
+            plt.show()
+        else:
+            if args.plot_filename.endswith(".png"):
+                plt.savefig(args.plot_filename, dpi=800)
+            else:
+                plt.savefig(args.plot_filename)

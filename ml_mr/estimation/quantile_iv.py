@@ -233,8 +233,7 @@ class QuantileIVEstimatorWithUncertainty(
 
         pred = []
         for tau in q:
-            taus = torch.full((x.size(0), 1), tau)
-            x_to_y = functools.partial(self.outcome_network.x_to_y, taus=taus)
+            x_to_y = functools.partial(self.outcome_network.x_to_y, taus=tau)
             pred.append(self.average_treatment_effect(x, covars, x_to_y))
 
         pred_tens = torch.hstack(pred)

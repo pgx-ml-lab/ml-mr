@@ -3,7 +3,7 @@ Internal utilities to construct neural networks.
 """
 
 import argparse
-from typing import Optional, Iterable, List, Callable, Dict, Any, Tuple
+from typing import Optional, Iterable, List, Callable, Dict, Any, Tuple, Union
 
 import pytorch_lightning as pl
 import torch
@@ -326,7 +326,7 @@ class OutcomeMLPBase(MLP):
         self,
         x: torch.Tensor,
         covars: Optional[torch.Tensor],
-        taus: Optional[torch.Tensor] = None
+        taus: Optional[Union[torch.Tensor, float]] = None
     ) -> torch.Tensor:
         if taus is not None and not self.hparams.sqr:  # type: ignore
             raise ValueError("Can't provide tau if SQR not enabled.")
@@ -341,7 +341,12 @@ class OutcomeMLPBase(MLP):
             taus = torch.full((x.size(0), 1), 0.5)
 
         if taus is not None:
-            stack.append(taus)
+            if isinstance(taus, torch.Tensor):
+                stack.append(taus)
+            elif isinstance(taus, float):
+                stack.append(torch.full((x.size(0), 1), taus))
+            else:
+                raise ValueError("Provide vector of taus or float.")
 
         x = torch.hstack(stack)
 

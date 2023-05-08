@@ -116,12 +116,15 @@ class MREstimator(object):
                 return x_to_y(x, None)
 
         # Check how much memory it would require to do it in one chunk.
-        mem = x.size(0) * covars.numel() * covars.element_size()
+        mem = (
+            x.numel() * covars.size(0) * x.element_size() +
+            x.numel() * covars.numel() * covars.element_size()
+        )
         debug(
             f"Batch ATE computation would require {mem} bytes to store the "
             f"input."
         )
-        if mem >= 1e9:
+        if mem >= 4e9:
             debug("\tUsing iterative algorithm.")
             ates = []
             for cur_x in x:
