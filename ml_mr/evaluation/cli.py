@@ -79,6 +79,13 @@ def parse_args(argv):
         help="Output filename to save the plot to disk."
     )
 
+    parser.add_argument(
+        "--alpha",
+        default=0.1,
+        type=float,
+        help="Alpha (miscoverage) level for prediction intervals and metrics."
+    )
+
     return parser.parse_args(argv)
 
 
@@ -88,16 +95,17 @@ def plot(
     domain: Tuple[float, float] = (-3, 3),
     label: str = "Predicted Y",
     plot_structural: bool = True,
-    n_points: int = 5000
+    n_points: int = 5000,
+    alpha: float = 0.1
 ):
     import matplotlib.pyplot as plt
 
-    xs = torch.linspace(domain[0], domain[1], n_points)
+    xs = torch.linspace(domain[0], domain[1], n_points).reshape(-1, 1)
 
     uncertainty = False
     if isinstance(estimator, MREstimatorWithUncertainty):
         uncertainty = True
-        y_hat_ci = estimator.effect_with_prediction_interval(xs, alpha=0.1)
+        y_hat_ci = estimator.effect_with_prediction_interval(xs, alpha=alpha)
         y_hat_l = y_hat_ci[:, 0]
         y_hat = y_hat_ci[:, 1]
         y_hat_u = y_hat_ci[:, 2]
@@ -118,17 +126,18 @@ def plot(
         )
 
     plt.plot(
-        xs.numpy(),
+        xs.numpy().flatten(),
         y_hat.numpy().reshape(-1),
         label=label
     )
     if uncertainty:
         plt.fill_between(
-            xs.numpy(),
+            xs.numpy().flatten(),
             y_hat_l.numpy().reshape(-1),
             y_hat_u.numpy().reshape(-1),
             zorder=-1,
-            color="#eeeeee"
+            color="#aaaaaa",
+            alpha=0.2
         )
 
 
@@ -215,7 +224,7 @@ def main():
         row = [input, cur_mse]
         if isinstance(estimator, MREstimatorWithUncertainty):
             width = mean_prediction_interval_absolute_width(
-                estimator, [domain_lower, domain_upper], 0.1
+                estimator, [domain_lower, domain_upper], args.alpha
             )
             row.append(width)
         else:
@@ -239,7 +248,8 @@ def main():
                     true_function,
                     domain=(domain_lower, domain_upper),
                     label=input,
-                    plot_structural=True if n_plotted == 0 else False
+                    plot_structural=True if n_plotted == 0 else False,
+                    alpha=args.alpha
                 )
                 n_plotted += 1
 

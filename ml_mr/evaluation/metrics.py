@@ -12,11 +12,11 @@ def mse(
     domain: Tuple[float, float] = (-3, 3),
     n_points: int = 5000
 ) -> float:
-    xs = torch.linspace(domain[0], domain[1], n_points)
-    y_hat = estimator.effect(xs).reshape(-1)
+    xs = torch.linspace(domain[0], domain[1], n_points).reshape(-1, 1)
+    y_hat = estimator.effect(xs).reshape(-1, 1)
     true_y = true_function(xs)
 
-    return F.mse_loss(y_hat, true_y).item()
+    return F.mse_loss(y_hat, true_y.reshape(-1, 1)).item()
 
 
 def mean_prediction_interval_absolute_width(
@@ -25,7 +25,7 @@ def mean_prediction_interval_absolute_width(
     alpha: float = 0.1,
     n_points: int = 5000,
 ) -> float:
-    xs = torch.linspace(domain[0], domain[1], n_points)
+    xs = torch.linspace(domain[0], domain[1], n_points).reshape(-1, 1)
     y_hat = estimator.effect_with_prediction_interval(xs, alpha=alpha)
 
     y_low = y_hat[:, 0]

@@ -79,21 +79,29 @@ class GridSampler(DeterministicSampler):
         if n_values is not None and step is not None:
             raise ValueError("Provide step OR n_values.")
 
+        db_type = "float"
         if n_values is not None:
             if log:
-                self._values = np.geomspace(start, stop, n_values)
+                self._values = np.geomspace(start, stop, n_values).tolist()
             else:
-                self._values = np.linspace(start, stop, n_values)
+                self._values = np.linspace(start, stop, n_values).tolist()
 
         elif step is not None:
             if log:
                 raise ValueError("Step not implemented in log space.")
-            self._values = np.arange(start, stop, step)
+            self._values = np.arange(start, stop, step).tolist()
+
+            if (
+                isinstance(start, int) and
+                isinstance(stop, int) and
+                isinstance(step, int)
+            ):
+                db_type = "integer"
 
         else:
             raise ValueError("Provide either step or n_values.")
 
-        super().__init__("float", len(self._values))
+        super().__init__(db_type, len(self._values))
 
     def __iter__(self):
         for v in itertools.cycle(self._values):

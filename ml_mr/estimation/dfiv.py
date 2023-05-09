@@ -40,7 +40,8 @@ estimator = DFIVEstimator.from_results("dfiv_estimate")
 
 import os
 import json
-from typing import Dict, Optional, Iterable, List
+import argparse
+from typing import Dict, Optional, Iterable, List, Union, Callable
 
 import torch
 import torch.nn as nn
@@ -48,11 +49,15 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 from torch.utils.data import random_split, DataLoader, Dataset
 
+from ..utils import default_validate_args
+from ..utils.conformal import OutcomeResidualPrediction
 from ..utils.linear import ridge_fit_predict
 from ..utils.nn import build_mlp
 from ..utils.training import train_model
 from ..logging import warn
-from .core import IVDataset, MREstimator
+from .core import (
+    IVDataset, IVDatasetWithGenotypes, MREstimator, MREstimatorWithUncertainty
+)
 
 
 DEFAULTS = {
@@ -245,11 +250,11 @@ class DFIVModel(pl.LightningModule):
         stage1_weight, x_feats_hat = ridge_fit_predict(
             x_feats,
             z_feats,
-            self.hparams.ridge_lambda1,
-            device=self.device
+            self.hparams.ridge_lambda1,  # type: ignore
+            device=self.device  # type: ignore
         )
 
-        losses = torch.empty(n_updates, device=self.device)
+        losses = torch.empty(n_updates, device=self.device)  # type: ignore
         for i in range(n_updates):
             opt.zero_grad()
             covariate_feats = self.c_net(covars)
@@ -259,13 +264,13 @@ class DFIVModel(pl.LightningModule):
 
             # Stage 2 regression.
             betas2, y_hat = ridge_fit_predict(
-                combined_feats, y, self.hparams.ridge_lambda2,
-                device=self.device
+                combined_feats, y, self.hparams.ridge_lambda2,  # type: ignore
+                device=self.device  # type: ignore
             )
 
             loss = (
                 F.mse_loss(y, y_hat) +
-                self.hparams.ridge_lambda2 * torch.norm(betas2) ** 2
+                self.hparams.ridge_lambda2 * torch.norm(betas2) ** 2  # type: ignore # noqa: E501
             )
             losses[i] = loss
 
@@ -290,20 +295,20 @@ class DFIVModel(pl.LightningModule):
         # "True" treatment features.
         x_feat = self.x_net(x).detach()
 
-        losses = torch.empty(n_updates, device=self.device)
+        losses = torch.empty(n_updates, device=self.device)  # type: ignore
 
         for i in range(n_updates):
             opt_iv.zero_grad()
 
             iv_feat = add_intercept(self.z_net(ivs))
             betas1, x_feat_hat = ridge_fit_predict(
-                iv_feat, x_feat, self.hparams.ridge_lambda1,
-                device=self.device
+                iv_feat, x_feat, self.hparams.ridge_lambda1,  # type: ignore
+                device=self.device  # type: ignore
             )
 
             loss = (
                 F.mse_loss(x_feat_hat, x_feat) +
-                self.hparams.ridge_lambda1 * torch.norm(betas1) ** 2
+                self.hparams.ridge_lambda1 * torch.norm(betas1) ** 2  # type: ignore # noqa: E501
             )
 
             self.manual_backward(loss)
@@ -332,8 +337,8 @@ class DFIVModel(pl.LightningModule):
         else:
             c_feats = None
 
-        losses = torch.empty(n_updates, device=self.device)
-        mses = torch.empty(n_updates, device=self.device)
+        losses = torch.empty(n_updates, device=self.device)  # type: ignore
+        mses = torch.empty(n_updates, device=self.device)  # type: ignore
         for i in range(n_updates):
             opt_exposure.zero_grad()
             x_feats = self.x_net(x)
@@ -342,8 +347,8 @@ class DFIVModel(pl.LightningModule):
                 x_feats,
                 c_feats,
                 y,
-                self.hparams.ridge_lambda1,
-                self.hparams.ridge_lambda2
+                self.hparams.ridge_lambda1,  # type: ignore
+                self.hparams.ridge_lambda2  # type: ignore
             )
             loss = results["loss"]
             losses[i] = loss
@@ -429,6 +434,141 @@ def get_betas(
 
     return dfiv_2sls(z_feats, x_feats, c_feats, ys,
                      ridge_lambda1, ridge_lambda2)
+
+
+def main(args: argparse.Namespace) -> None:
+    default_validate_args(args)
+
+    dataset = IVDatasetWithGenotypes.from_argparse_namespace(args)
+
+    # Automatically add the model hyperparameters.
+    kwargs = {k: v for k, v in vars(args).items() if k in DEFAULTS.keys()}
+
+    fit_dfiv(
+        dataset=dataset,
+        wandb_project=args.wandb_project,
+        **kwargs,
+    )
+
+
+def configure_argparse(parser) -> None:
+    IVDatasetWithGenotypes.add_dataset_arguments(parser)
+
+    parser.add_argument("--output-dir", default=DEFAULTS["output_dir"])
+
+    parser.add_argument(
+        "--validation-proportion",
+        type=float,
+        default=DEFAULTS["validation_proportion"],
+    )
+
+    parser.add_argument(
+        "--n-instrument-features",
+        type=int,
+        default=DEFAULTS["n_instrument_features"],
+    )
+
+    parser.add_argument(
+        "--n-exposure-features",
+        type=int,
+        default=DEFAULTS["n_exposure_features"],
+    )
+
+    parser.add_argument(
+        "--n-covariate-features",
+        type=int,
+        default=DEFAULTS["n_covariate_features"],
+    )
+
+    parser.add_argument(
+        "--instrument-net-hidden",
+        nargs="*",
+        default=DEFAULTS["instrument_net_hidden"]
+    )
+
+    parser.add_argument(
+        "--exposure-net-hidden",
+        nargs="*",
+        default=DEFAULTS["exposure_net_hidden"]
+    )
+
+    parser.add_argument(
+        "--covariate-net-hidden",
+        nargs="*",
+        default=DEFAULTS["covariate_net_hidden"]
+    )
+
+    parser.add_argument(
+        "--ridge-lambda1",
+        type=float,
+        default=DEFAULTS["ridge_lambda1"]
+    )
+
+    parser.add_argument(
+        "--ridge-lambda2",
+        type=float,
+        default=DEFAULTS["ridge_lambda2"]
+    )
+
+    parser.add_argument(
+        "--n-updates-stage1",
+        type=int,
+        default=DEFAULTS["n_updates_stage1"]
+    )
+
+    parser.add_argument(
+        "--n-updates-covariate_net",
+        type=int,
+        default=DEFAULTS["n_updates_covariate_net"]
+    )
+
+    parser.add_argument(
+        "--n-updates-stage2",
+        type=int,
+        default=DEFAULTS["n_updates_stage2"]
+    )
+
+    parser.add_argument(
+        "--instrument-net-learning-rate",
+        type=float,
+        default=DEFAULTS["instrument_net_learning_rate"]
+    )
+
+    parser.add_argument(
+        "--exposure-net-learning-rate",
+        type=float,
+        default=DEFAULTS["exposure_net_learning_rate"]
+    )
+
+    parser.add_argument(
+        "--covariate-net-learning-rate",
+        type=float,
+        default=DEFAULTS["covariate_net_learning_rate"]
+    )
+
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULTS["batch_size"]
+    )
+
+    parser.add_argument(
+        "--max-epochs",
+        type=int,
+        default=DEFAULTS["max_epochs"]
+    )
+
+    parser.add_argument(
+        "--accelerator",
+        type=str,
+        default=DEFAULTS["accelerator"]
+    )
+
+    parser.add_argument(
+        "--wandb-project",
+        type=str,
+        default=None
+    )
 
 
 def fit_dfiv(
@@ -531,6 +671,30 @@ def fit_dfiv(
         os.path.join(output_dir, "linear_weights.pt")
     )
 
+    wrapped_model, resid_pred_loss = train_conformal_predictor(
+        train_dataset, val_dataset,
+        model, _2sls_results["betas2"],
+        alpha=0.1,
+        output_dir=output_dir
+    )
+
+    meta["resid_pred_loss"] = resid_pred_loss
+
+    conformal_net: OutcomeResidualPrediction = (
+        OutcomeResidualPrediction.load_from_checkpoint(
+            os.path.join(output_dir, "dfiv_calibration.ckpt"),
+            wrapped_model=wrapped_model
+        )
+    )
+
+    conformal_net.set_q_hat_from_data(val_dataset)
+    assert isinstance(conformal_net.q_hat, torch.Tensor)
+    meta["q_hat"] = conformal_net.q_hat.item()
+
+    estimator = DFIVEstimator(
+        conformal_net, _2sls_results["betas1"], _2sls_results["betas2"]
+    )
+
     with open(os.path.join(output_dir, "meta.json"), "wt") as f:
         json.dump(meta, f)
 
@@ -540,50 +704,155 @@ def fit_dfiv(
         wandb.finish()
 
 
+# Stub that has a forward function in the format expected by the conformal
+# regression utility.
+class _ConformalStub:
+    def __init__(self, dfiv_model, betas):
+        self.dfiv_model = dfiv_model
+        self.betas = betas
+
+    def x_to_y(self, x, covars):
+        return dfiv_x_to_y(self.dfiv_model, self.betas, x, covars)
+
+
+def train_conformal_predictor(
+    train_dataset: Dataset,
+    val_dataset: Dataset,
+    model: DFIVModel,
+    betas: torch.Tensor,
+    alpha: float,
+    output_dir: str
+):
+    # We need to have a forward method that goes from x to y.
+    n_exposures = train_dataset[0][0].numel()
+    n_covars = train_dataset[0][3].numel()
+
+    wrap = _ConformalStub(model, betas)
+    resid_model = OutcomeResidualPrediction(
+        n_exposures + n_covars,
+        wrapped_model=wrap,  # type: ignore
+        alpha=alpha
+    )
+
+    resid_pred_loss = train_model(
+        train_dataset,
+        val_dataset,
+        resid_model,
+        monitored_metric="val_resid_pred_loss",
+        output_dir=output_dir,
+        checkpoint_filename="dfiv_calibration.ckpt",
+        batch_size=DEFAULTS["batch_size"],  # type: ignore
+        max_epochs=100,
+    )
+
+    return wrap, resid_pred_loss
+
+
+def dfiv_x_to_y(
+    model: DFIVModel,
+    betas2: torch.Tensor,
+    x: torch.Tensor,
+    covars: Optional[torch.Tensor]
+) -> torch.Tensor:
+    x_feats = add_intercept(model.x_net(x))
+
+    if covars is not None and covars.numel() > 0:
+        assert model.c_net is not None
+        covars_feats = model.c_net(covars)
+        x_feats = augment_with_covar_feats(x_feats, covars_feats)
+
+    return x_feats @ betas2
+
+
 class DFIVEstimator(MREstimator):
     def __init__(
         self,
-        dfiv_model: DFIVModel,
+        dfiv_model: Union[DFIVModel, OutcomeResidualPrediction],
         betas1: torch.Tensor,
-        betas2: torch.Tensor
+        betas2: torch.Tensor,
     ):
         self.model = dfiv_model
         self.betas1 = betas1
         self.betas2 = betas2
 
-    @classmethod
-    def from_results(cls, dir_name: str) -> "DFIVEstimator":
-        weights = torch.load(os.path.join(dir_name, "linear_weights.pt"))
+        # No prediction interval.
+        if isinstance(self.model, DFIVModel):
+            def x_to_y(x, covars=None):
+                return dfiv_x_to_y(dfiv_model, betas2, x, covars)
+            self.x_to_y = x_to_y
+            self.alpha = None
 
-        model = DFIVModel.load_from_checkpoint(
-            os.path.join(dir_name, "dfiv_model.ckpt")
-        )
+        # With predicted interval.
+        elif isinstance(self.model, OutcomeResidualPrediction):
+            self.x_to_y = self.model.x_to_y
+            self.alpha = self.model.alpha
 
-        return cls(model, weights["betas1"], weights["betas2"])
+        else:
+            raise ValueError()
 
     def effect(
         self,
         x: torch.Tensor,
         covars: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        def x_to_y(
-            x: torch.Tensor,
-            covars: Optional[torch.Tensor]
-        ) -> torch.Tensor:
-            if x.ndim == 1:
-                x = x.reshape(-1, 1)
+        res = self.average_treatment_effect(
+            x, covars, self.x_to_y
+        )
+        if res.size(1) == 3:
+            return res[:, 1]
+        else:
+            return res
 
-            x_feats = add_intercept(self.model.x_net(x))
 
-            if covars is not None:
-                assert self.model.c_net is not None
-                covar_feats = self.model.c_net(covars)
-                x_feats = augment_with_covar_feats(x_feats, covar_feats)
+class DFIVEstimatorWithUncertainty(MREstimatorWithUncertainty, DFIVEstimator):
+    @staticmethod
+    def from_results(dir_name: str) -> "DFIVEstimator":  # type: ignore
+        with open(os.path.join(dir_name, "meta.json"), "rt") as f:
+            meta = json.load(f)
 
-            return x_feats @ self.betas2
+        weights = torch.load(os.path.join(dir_name, "linear_weights.pt"))
 
-        return self.average_treatment_effect(x, covars, x_to_y)
+        model = DFIVModel.load_from_checkpoint(
+            os.path.join(dir_name, "dfiv_model.ckpt")
+        )
+
+        # Load conformal model if available.
+        conformal_filename = os.path.join(dir_name, "dfiv_calibration.ckpt")
+        if os.path.isfile(conformal_filename):
+            stub = _ConformalStub(model, weights["betas2"])
+            conformal = OutcomeResidualPrediction.load_from_checkpoint(
+                conformal_filename,
+                wrapped_model=stub
+            )
+
+            # Set the q-hat.
+            conformal.q_hat = meta["q_hat"]  # type: ignore
+
+            return DFIVEstimatorWithUncertainty(
+                conformal, weights["betas1"], weights["betas2"]
+            )
+
+        return DFIVEstimator(model, weights["betas1"], weights["betas2"])
+
+    def effect_with_prediction_interval(
+        self,
+        x: torch.Tensor,
+        covars: Optional[torch.Tensor] = None,
+        alpha: float = 0.1
+    ) -> torch.Tensor:
+        """Mean exposure to outcome effect at values of x."""
+        if alpha != self.alpha:
+            raise ValueError(
+                f"Only alpha={self.alpha} was estimated for this model."
+            )
+
+        if x.ndim == 1:
+            x = x.reshape(-1, 1)
+
+        return self.average_treatment_effect(
+            x, covars, self.x_to_y
+        )
 
 
 estimate = fit_dfiv
-load = DFIVEstimator.from_results
+load = DFIVEstimatorWithUncertainty.from_results

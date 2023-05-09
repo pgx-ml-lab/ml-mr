@@ -69,14 +69,19 @@ class OutcomeResidualPrediction(MLP):
             _save_hyperparams=False
         )
 
+        self.alpha = alpha
         self.wrapped_model = wrapped_model
         self.q_hat = q_hat
         self.save_hyperparameters(ignore=["wrapped_model", "q_hat"])
 
-    def x_to_y(self, x: torch.Tensor, covars: Optional[torch.Tensor] = None):
+    def x_to_y(
+        self,
+        x: torch.Tensor,
+        covars: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         # Get prediction and resid.
         with torch.no_grad():
-            y_hat = self.wrapped_model.forward(x, covars)
+            y_hat = self.wrapped_model.x_to_y(x, covars)
             pred_resid = self.forward(x, covars)
 
         return torch.hstack([
@@ -100,7 +105,7 @@ class OutcomeResidualPrediction(MLP):
         alpha = self.hparams.alpha  # type: ignore
 
         with torch.no_grad():
-            y_hat = self.wrapped_model.forward(x, covars)
+            y_hat = self.wrapped_model.x_to_y(x, covars)
             pred_resid = self.forward(x, covars)
 
         actual_abs_resid = torch.abs(y - y_hat)
@@ -124,7 +129,7 @@ class OutcomeResidualPrediction(MLP):
     ) -> torch.Tensor:
         x, y, _, covars = batch
         with torch.no_grad():
-            y_hat = self.wrapped_model.forward(x, covars=covars)
+            y_hat = self.wrapped_model.x_to_y(x, covars=covars)
 
         residual = torch.abs(y_hat - y)
         residual_hat = self.forward(x, covars)
