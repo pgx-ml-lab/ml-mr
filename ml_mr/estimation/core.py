@@ -124,7 +124,7 @@ class MREstimator(object):
             f"Batch ATE computation would require {mem} bytes to store the "
             f"input."
         )
-        if mem >= 4e9:
+        if mem >= 3e6:
             debug("\tUsing iterative algorithm.")
             ates = []
             for cur_x in x:

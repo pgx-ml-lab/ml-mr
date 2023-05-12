@@ -7,7 +7,7 @@ Command-line interface entry-point for all tasks related to model evaluation.
 
 """
 
-from typing import Tuple, Callable
+from typing import Tuple, Callable, Optional
 import sys
 import csv
 import os
@@ -19,7 +19,7 @@ import numpy as np
 
 from ..estimation import MODELS, MREstimator, MREstimatorWithUncertainty
 from .metrics import mse, mean_prediction_interval_absolute_width
-from ..logging import warn, info
+from ..logging import warn, info, debug
 
 
 def parse_args(argv):
@@ -49,6 +49,12 @@ def parse_args(argv):
         default=None,
         type=str,
         help="Domain used to evaluate metrics such as the mean squared error."
+    )
+
+    parser.add_argument(
+        "--sample-n-covars",
+        default=10_000,
+        help="Sample covariable when computing ATEs to save on computation."
     )
 
     parser.add_argument(
@@ -93,6 +99,7 @@ def plot(
     estimator: MREstimator,
     true_function: Callable[[torch.Tensor], torch.Tensor],
     domain: Tuple[float, float] = (-3, 3),
+    covars: Optional[torch.Tensor] = None,
     label: str = "Predicted Y",
     plot_structural: bool = True,
     n_points: int = 5000,
@@ -105,12 +112,14 @@ def plot(
     uncertainty = False
     if isinstance(estimator, MREstimatorWithUncertainty):
         uncertainty = True
-        y_hat_ci = estimator.effect_with_prediction_interval(xs, alpha=alpha)
+        y_hat_ci = estimator.effect_with_prediction_interval(
+            xs, covars, alpha=alpha
+        )
         y_hat_l = y_hat_ci[:, 0]
         y_hat = y_hat_ci[:, 1]
         y_hat_u = y_hat_ci[:, 2]
     else:
-        y_hat = estimator.effect(xs)
+        y_hat = estimator.effect(xs, covars)
 
     true_y = true_function(xs)
 
@@ -198,6 +207,22 @@ def main():
             )
             continue
 
+        # Load covariables if needed.
+        covar_filename = os.path.join(input, "covariables.pt")
+        if os.path.isfile(covar_filename):
+            covars = torch.load(covar_filename)
+
+            if args.sample_n_covars < covars.size(0):
+                indices = torch.multinomial(
+                    torch.ones(covars.size(0)),
+                    args.sample_n_covars,
+                    replacement=False
+                )
+                covars = covars[indices]
+                debug(f"Downsampling covars to {covars.size()}.")
+        else:
+            covars = None
+
         meta_values = []
         if args.meta_keys:
             meta_values = [
@@ -218,13 +243,15 @@ def main():
             continue
 
         cur_mse = mse(
-            estimator, true_function, domain=(domain_lower, domain_upper)
+            estimator, true_function, domain=(domain_lower, domain_upper),
+            covars=covars
         )
 
         row = [input, cur_mse]
         if isinstance(estimator, MREstimatorWithUncertainty):
             width = mean_prediction_interval_absolute_width(
-                estimator, [domain_lower, domain_upper], args.alpha
+                estimator, [domain_lower, domain_upper],
+                covars=covars, alpha=args.alpha
             )
             row.append(width)
         else:
