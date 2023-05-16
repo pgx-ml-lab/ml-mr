@@ -11,7 +11,7 @@ There are 4 core modules:
 1. **Simulation** Utilities to simulate data and pre-implemented simulation models from published articles.
 2. **Estimation** Unified interface (programmatic and command-line) to different estimators. This module makes it easy to compare algorithms, and to train the neural networks on arbitrary hardware (_e.g._ GPUs) while not having to worry about logging, early stopping, model checkpointing, etc.
 3. **Evaluation** Facilitates plotting, computing metrics when the true causal function is known (_e.g._ in simulation models). It also makes it easy to extract stored model statistics or metadata.
-4. **Sweep** Many of the implemented algorithms rely on hyperparameters. For example, we need to pre-specify the number of quantiles to use in Quantile IV, or the learned feature's dimensionality in the Deep Feature IV algorithm. Furthermore, neural network optimization also relies on hyperparameters such as the learning rate. To make it easy to conduct grid or random hyperparameters searches, we implemented a sweep module that uses multiprocessing to fit various models in parallel.
+4. **Sweep** Many of the implemented algorithms rely on hyperparameters. For example, we need to pre-specify the number of quantiles to use in Quantile IV, or the learned feature's dimensionality in the Deep Feature IV algorithm. Furthermore, neural network optimization also relies on hyperparameters such as the learning rate. To make it easy to conduct grid or random hyperparameter searches, we implemented a sweep module that uses multiprocessing to fit models in parallel.
 
 # GLBIO Presentation
 
@@ -23,7 +23,7 @@ We presented _ml-mr_ at the [Great Lakes Bioinformatics 2023 conference](https:/
 pip install ml-mr  # Only after cloning...
 ```
 
-Installation is a bit tedious because we haven't published ml-mr to the PyPI. This will be done prior to publication. If you want help getting started, feel free to contact me.
+Installation is a bit tedious because we haven't published _ml-mr_ to the PyPI yet. This will be done prior to publication. If you want help getting started, feel free to contact me.
 
 Note that you may need to install [pytorch-genotypes](https://github.com/legaultmarc/pytorch-genotypes) by following the instructions before installing _ml-mr_.
 
@@ -35,7 +35,7 @@ A more complex example can be found [here](https://gist.github.com/legaultmarc/6
 
 # Estimation
 
-Assuming a TSV file with columns for the instruments, covariables, exposure and outcome, one can easily fit machine learning instrumental variable estimators using the command-line interface.
+Assuming a TSV file with columns for the instruments, covariables, exposure and outcome, we can easily fit machine learning instrumental variable estimators using the command-line interface.
 
 Here's an example command that would train a _Quantile IV_ model.
 
@@ -238,7 +238,7 @@ For example, here's a ``meta.json`` file from a fitted Quantile IV Model:
 
 </details>
 
-To avoid having to parse this manually, we can specify fields to extract in the ``ml-mr evaluation`` command. For example, if you want the CSV file to include the ``q`` and ``outcome_val``, we will use the ``--meta-keys q outcome_val`` argument.
+To avoid having to parse this manually, we can specify fields to extract in the ``ml-mr evaluation`` command. For example, if you want the CSV file to include the ``q`` and ``outcome_val_loss``, we will use the ``--meta-keys q outcome_val_loss`` argument.
 
 # Hyperparameter Sweep
 
@@ -249,6 +249,8 @@ ml-mr sweep my_config.json
 ```
 
 The configuration should define how to read a dataset, what algorithm to fit as well as configuration parameter samplers. 
+
+To control the number of workers fitting models in parallel, use the ``--n-workers`` argument.
 
 Simple examples can be found in this repository's "examples" directory.
 
