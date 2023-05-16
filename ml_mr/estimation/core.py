@@ -157,7 +157,7 @@ class MREstimatorWithUncertainty(MREstimator):
         self,
         x: torch.Tensor,
         covars: Optional[torch.Tensor] = None,
-        alpha: float = 0.05
+        alpha: float = 0.1
     ) -> torch.Tensor:
         raise NotImplementedError()
 

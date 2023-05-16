@@ -23,6 +23,10 @@ We presented _ml-mr_ at the [Great Lakes Bioinformatics 2023 conference](https:/
 pip install ml-mr  # Only after cloning...
 ```
 
+Installation is a bit tedious because we haven't published ml-mr to the PyPI. This will be done prior to publication. If you want help getting started, feel free to contact me.
+
+Note that you may need to install [pytorch-genotypes](https://github.com/legaultmarc/pytorch-genotypes) by following the instructions before installing _ml-mr_.
+
 # Simulation
 
 A simple simulation model from Burgess S, _et al._ _Epidemiology_ (2014) can be found [here](ml-mr/simulation_models/burgess_epidemiology_2014/scripts/simulate.py).
