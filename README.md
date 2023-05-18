@@ -29,7 +29,7 @@ Note that you may need to install [pytorch-genotypes](https://github.com/legault
 
 # Simulation
 
-A simple simulation model from Burgess S, _et al._ _Epidemiology_ (2014) can be found [here](ml-mr/simulation_models/burgess_epidemiology_2014/scripts/simulate.py).
+A simple simulation model from Burgess S, _et al._ _Epidemiology_ (2014) can be found [here](simulation_models/burgess_epidemiology_2014/scripts/simulate.py).
 
 A more complex example can be found [here](https://gist.github.com/legaultmarc/6083df23150c463879e32e6184459ca9). In this model, the (linear) causal effect of the exposure on the outcome varies nonlinearly as a function of an effect modifier variable. It is a good example of where machine learning models may perform better than conventional instrumental variable estimators.
 
