@@ -41,7 +41,7 @@ estimator = DFIVEstimator.from_results("dfiv_estimate")
 import os
 import json
 import argparse
-from typing import Dict, Optional, Iterable, List, Union, Callable
+from typing import Dict, Optional, Iterable, List, Union
 
 import torch
 import torch.nn as nn

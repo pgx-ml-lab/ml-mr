@@ -274,6 +274,7 @@ def main():
                     estimator,
                     true_function,
                     domain=(domain_lower, domain_upper),
+                    covars=covars,
                     label=input,
                     plot_structural=True if n_plotted == 0 else False,
                     alpha=args.alpha

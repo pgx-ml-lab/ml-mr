@@ -82,7 +82,7 @@ class ExposureQuantileMLP(MLP):
         self.loss.quantiles = self.loss.quantiles.to(  # type: ignore
             device=self.device
         )
-        return super().on_train_start()
+        return super().on_fit_start()
 
     def _step(self, batch, batch_index, log_prefix):
         x, _, ivs, covars = batch
