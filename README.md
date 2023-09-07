@@ -13,6 +13,17 @@ There are 4 core modules:
 3. **Evaluation** Facilitates plotting, computing metrics when the true causal function is known (_e.g._ in simulation models). It also makes it easy to extract stored model statistics or metadata.
 4. **Sweep** Many of the implemented algorithms rely on hyperparameters. For example, we need to pre-specify the number of quantiles to use in Quantile IV, or the learned feature's dimensionality in the Deep Feature IV algorithm. Furthermore, neural network optimization also relies on hyperparameters such as the learning rate. To make it easy to conduct grid or random hyperparameter searches, we implemented a sweep module that uses multiprocessing to fit models in parallel.
 
+# Estimands
+
+To help understand the different estimands available in _ml-mr_, we give a short clarifying description. Throughout the table, $X$ refers to the exposure, $Y$ the outcome and $C$ observed covariables.
+
+| [MREstimator](ml_mr/estimation/core.py) method or standard terminology | Mathematical object | Definition | Comments |
+| --- | --- | --- | --- |
+| __iv_reg_function__ | $f: X,C \to Y$ | $\mathbb{E}[Y \vert \text{do}(X),C] $ | Most flexible output of IV inference algorithms. Estimates the full structural function between the exposure and the outcome conditional on specified covariate values. |
+__avg_iv_reg_function__ | $f: X \to Y$ | $\mathbb{E}[Y \vert \text{do}(X)]$ | In practice, we marginalize the covariates from the __iv_reg_function__ by using the observed covariates values. In other words, we use the sample estimate of $\mathbb{E}[Y \vert \text{do}(X)] = \int \mathbb{E}[Y \vert \text{do}(X), C] dF_c$ which we take as $\frac{1}{n}\sum_{i=1}^n \mathbb{E}[Y \vert \text{do}(X),C=c_i].$ |
+| Average treatment effect (ATE) | Scalar | $\mu_1 - \mu_0$ with $\mu_x = \mathbb{E}[Y \vert \text{do}(X=x)]$ | This can be expressed as the difference of __avg_iv_reg_function__ calls at reference values (_e.g._ $X_1=1$ and $X_0=0$). **Importantly** this measure is not constant for any choice of $X$ and is less convenient in the nonlinear setting. | 
+| Conditional Average treatment effect (CATE) | Scalar at fixed value of C or $f: C \to \mathbb{R}$ | $\mu_{1c} - \mu_{0c}$ with $\mu_{xc} = \mathbb{E}[Y \vert \text{do}(X=x), C=c]$ | This statistic suffers the same limitation as the ATE as a single number summary for a nonlinear relationship. |
+
 # GLBIO Presentation
 
 We presented _ml-mr_ at the [Great Lakes Bioinformatics 2023 conference](https://www.iscb.org/glbio2023). The [slides are available here](assets/ml_mr_GLBIO.pdf).
