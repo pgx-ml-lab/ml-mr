@@ -19,10 +19,10 @@ To help understand the different estimands available in _ml-mr_, we give a short
 
 | [MREstimator](ml_mr/estimation/core.py) method or standard terminology | Mathematical object | Definition | Comments |
 | --- | --- | --- | --- |
-| __iv_reg_function__ | $f: X,C \to Y$ | $\mathbb{E}[Y \vert \text{do}(X),C] $ | Most flexible output of IV inference algorithms. Estimates the full structural function between the exposure and the outcome conditional on specified covariate values. |
-__avg_iv_reg_function__ | $f: X \to Y$ | $\mathbb{E}[Y \vert \text{do}(X)]$ | In practice, we marginalize the covariates from the __iv_reg_function__ by using the observed covariates values. In other words, we use the sample estimate of $\mathbb{E}[Y \vert \text{do}(X)] = \int \mathbb{E}[Y \vert \text{do}(X), C] dF_c$ which we take as: $$\frac{1}{n}\sum_{i=1}^n \mathbb{E}[Y \vert \text{do}(X),C=c_i].$$ |
-| Average treatment effect (ATE) | Scalar | $\mu_1 - \mu_0$ with $\mu_x = \mathbb{E}[Y \vert \text{do}(X=x)]$ | This can be expressed as the difference of __avg_iv_reg_function__ calls at reference values (_e.g._ $X_1=1$ and $X_0=0$). **Importantly** this measure is not constant for any choice of $X$ and is less convenient in the nonlinear setting. | 
-| Conditional Average treatment effect (CATE) | Scalar at fixed value of C or $f: C \to \mathbb{R}$ | $\mu_{1c} - \mu_{0c}$ with $\mu_{xc} = \mathbb{E}[Y \vert \text{do}(X=x), C=c]$ | This statistic suffers the same limitation as the ATE as a single number summary for a nonlinear relationship. |
+| `iv_reg_function` | $f: X,C \to Y$ | $\mathbb{E}[Y \vert \text{do}(X),C] $ | Estimates the structural function between the exposure and the outcome conditional on specified covariate values. It is often the case that this estimate will biased. |
+`avg_iv_reg_function` | $f: X \to Y$ | $\mathbb{E}[Y \vert \text{do}(X)]$ | In practice, we marginalize the covariates from the __iv_reg_function__ by using the observed covariates values. In other words, we use the sample estimate of $\mathbb{E}[Y \vert \text{do}(X)] = \int \mathbb{E}[Y \vert \text{do}(X), C] dF_c$ which we take as: $$\frac{1}{n}\sum_{i=1}^n \mathbb{E}[Y \vert \text{do}(X),C=c_i].$$ |
+| `ate` (Average treatment effect) | Scalar | $\mu_1 - \mu_0$ with $\mu_x = \mathbb{E}[Y \vert \text{do}(X=x)]$ | This can be expressed as the difference of __avg_iv_reg_function__ calls at reference values (_e.g._ $X_1=1$ and $X_0=0$). | 
+| `cate` (Conditional Average Treatment Effect) | Scalar at fixed value of C or $f: C \to \mathbb{R}$ | $\mu_{1c} - \mu_{0c}$ with $\mu_{xc} = \mathbb{E}[Y \vert \text{do}(X=x), C=c]$ | This quantity is also defined with respect to a pair of X values that are compared and fixed levels of the observed covariates. |
 
 # GLBIO Presentation
 
