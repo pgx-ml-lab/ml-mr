@@ -29,25 +29,84 @@ IVDatasetBatch = Tuple[
 
 
 class MREstimator(object):
-    def effect(
+    def __init__(
+        self,
+        covars: Optional[torch.Tensor],
+        num_samples: int = 10_000
+    ):
+        if covars is None:
+            self.covars = None
+            return
+
+        # Sample covariates if needed.
+        if num_samples <= covars.shape[0]:
+            idx = torch.multinomial(
+                torch.ones((covars.shape[0])),
+                num_samples=num_samples,
+                replacement=False,
+            )
+            covars = covars[idx]
+
+        self.covars = covars
+
+    def iv_reg_function(
         self,
         x: torch.Tensor,
         covars: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        """Return the expected effect on the outcome when the exposure is set
-        to X.
-
-        E[Y | do(X=x)]
-
-        In many cases, the ml-mr estimators condition on variables for
-        estimation. If a sample of covariables is provided, the causal effect
-        will be empirically averaged over the covariable values.
-
-        i.e. Sum P(Y | C, do(X=x)) P(C) as empirically observed in the provided
-        data.
-
-        """
         raise NotImplementedError()
+
+    def avg_iv_reg_function(
+        self,
+        x: torch.Tensor,
+        low_memory: bool = False,
+    ) -> torch.Tensor:
+        if self.covars is None:
+            return self.iv_reg_function(x, None)
+
+        if low_memory:
+            return self._lowmem_avg_iv_reg_function(x)
+
+        n_covars = self.covars.shape[0]
+        x_rep = torch.repeat_interleave(x, n_covars, dim=0)
+        covars = self.covars.repeat(x.shape[0], 1)
+
+        y_hats = self.iv_reg_function(x_rep, covars)
+
+        return torch.vstack([
+            tens.mean(dim=0) for tens in torch.split(y_hats, n_covars)
+        ])
+
+    def _lowmem_avg_iv_reg_function(self, x: torch.Tensor) -> torch.Tensor:
+        avgs = []
+        for cur_x in x:
+            cur_cf = torch.mean(self.iv_reg_function(cur_x, self.covars))
+            avgs.append(cur_cf)
+
+        return torch.vstack(avgs)
+
+    def ate(
+        self,
+        x0: torch.Tensor,
+        x1: torch.Tensor,
+    ) -> torch.Tensor:
+        """Average treatment effect."""
+        y1 = self.avg_iv_reg_function(x1)
+        y0 = self.avg_iv_reg_function(x0)
+
+        return y1 - y0
+
+    def cate(
+        self,
+        x0: torch.Tensor,
+        x1: torch.Tensor,
+        covars: torch.Tensor
+    ) -> torch.Tensor:
+        """Conditional average treatment effect."""
+        y1 = self.iv_reg_function(x1, covars)
+        y0 = self.iv_reg_function(x0, covars)
+
+        return y1 - y0
 
     @staticmethod
     def interpolate(
@@ -84,72 +143,6 @@ class MREstimator(object):
 
         """
         raise NotImplementedError()
-
-    @staticmethod
-    def average_treatment_effect_at_x(
-        x: float,
-        covars: Optional[torch.Tensor],
-        x_to_y: Callable[[torch.Tensor, Optional[torch.Tensor]], torch.Tensor],
-    ):
-        if covars is not None and covars.numel() > 0:
-            xs = torch.full((covars.size(0), 1), x)
-            return torch.mean(x_to_y(xs, covars), dim=0)
-        else:
-            return x_to_y(torch.tensor([[x]]), None)
-
-    @classmethod
-    def average_treatment_effect(
-        cls,
-        x: torch.Tensor,
-        covars: Optional[torch.Tensor],
-        x_to_y: Callable[[torch.Tensor, Optional[torch.Tensor]], torch.Tensor],
-    ):
-        """Compute the average treatment effect for a set of X values.
-
-        For models that include covariates (exogenous variables), we get the
-        network predicted value at every specified covariate value while
-        fixing X and average the predicted values to get the ATE.
-
-        """
-        if covars is None or covars.numel() < 1:
-            with torch.no_grad():
-                return x_to_y(x, None)
-
-        # Check how much memory it would require to do it in one chunk.
-        mem = (
-            x.numel() * covars.size(0) * x.element_size() +
-            x.numel() * covars.numel() * covars.element_size()
-        )
-        debug(
-            f"Batch ATE computation would require {mem} bytes to store the "
-            f"input."
-        )
-        if mem >= 3e6:
-            debug("\tUsing iterative algorithm.")
-            ates = []
-            for cur_x in x:
-                with torch.no_grad():
-                    ate = cls.average_treatment_effect_at_x(
-                        cur_x.item(), covars, x_to_y
-                    )
-                ates.append(ate)
-
-            return torch.vstack(ates)
-
-        debug("\tUsing batch algorithm.")
-        covars_n = covars.size(0)
-
-        x_rep = torch.repeat_interleave(x, covars_n, dim=0)
-        covars = covars.repeat(x.size(0), 1)
-
-        with torch.no_grad():
-            y_hats = x_to_y(x_rep, covars)
-
-        means = torch.vstack(
-            [tens.mean(dim=0) for tens in torch.split(y_hats, covars_n)]
-        )
-
-        return means
 
 
 class MREstimatorWithUncertainty(MREstimator):
