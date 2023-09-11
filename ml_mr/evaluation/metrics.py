@@ -14,10 +14,14 @@ def mse(
     n_points: int = 5000
 ) -> float:
     xs = torch.linspace(domain[0], domain[1], n_points).reshape(-1, 1)
-    y_hat = estimator.effect(xs, covars).reshape(-1, 1)
+    y_hat = estimator.iv_reg_function(xs, covars)
+
+    if isinstance(estimator, MREstimatorWithUncertainty):
+        y_hat = y_hat[:, :, 1]
+
     true_y = true_function(xs)
 
-    return F.mse_loss(y_hat, true_y.reshape(-1, 1)).item()
+    return F.mse_loss(y_hat, true_y).item()
 
 
 def mean_prediction_interval_absolute_width(
@@ -28,10 +32,11 @@ def mean_prediction_interval_absolute_width(
     n_points: int = 5000,
 ) -> float:
     xs = torch.linspace(domain[0], domain[1], n_points).reshape(-1, 1)
-    y_hat = estimator.effect_with_prediction_interval(
+
+    y_hat = estimator.iv_reg_function(
         xs, covars=covars, alpha=alpha
     )
 
-    y_low = y_hat[:, 0]
-    y_high = y_hat[:, 2]
+    y_low = y_hat[:, :, 0]
+    y_high = y_hat[:, :, 2]
     return torch.mean(torch.abs(y_low - y_high)).item()

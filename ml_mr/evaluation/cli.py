@@ -112,14 +112,14 @@ def plot(
     uncertainty = False
     if isinstance(estimator, MREstimatorWithUncertainty):
         uncertainty = True
-        y_hat_ci = estimator.effect_with_prediction_interval(
+        y_hat_ci = estimator.iv_reg_function(
             xs, covars, alpha=alpha
         )
-        y_hat_l = y_hat_ci[:, 0]
-        y_hat = y_hat_ci[:, 1]
-        y_hat_u = y_hat_ci[:, 2]
+        y_hat_l = y_hat_ci[:, :, 0]
+        y_hat = y_hat_ci[:, :, 1]
+        y_hat_u = y_hat_ci[:, :, 2]
     else:
-        y_hat = estimator.effect(xs, covars)
+        y_hat = estimator.iv_reg_function(xs, covars)
 
     true_y = true_function(xs)
 

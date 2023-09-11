@@ -12,7 +12,7 @@ from pytorch_genotypes.dataset import (BACKENDS, GeneticDatasetBackend,
 from scipy.interpolate import interp1d
 from torch.utils.data import Dataset, DataLoader
 
-from ..logging import warn, debug
+from ..logging import warn
 
 INTERPOLATION = ["linear", "quadratic", "cubic"]
 Interpolation = Literal["linear", "quadratic", "cubic"]
@@ -49,6 +49,9 @@ class MREstimator(object):
 
         self.covars = covars
 
+    def set_covars(self, covars: torch.Tensor) -> None:
+        self.covars = covars
+
     def iv_reg_function(
         self,
         x: torch.Tensor,
@@ -65,7 +68,7 @@ class MREstimator(object):
             return self.iv_reg_function(x, None)
 
         if low_memory:
-            return self._lowmem_avg_iv_reg_function(x)
+            return self._low_mem_avg_iv_reg_function(x)
 
         n_covars = self.covars.shape[0]
         x_rep = torch.repeat_interleave(x, n_covars, dim=0)
@@ -77,10 +80,15 @@ class MREstimator(object):
             tens.mean(dim=0) for tens in torch.split(y_hats, n_covars)
         ])
 
-    def _lowmem_avg_iv_reg_function(self, x: torch.Tensor) -> torch.Tensor:
+    def _low_mem_avg_iv_reg_function(self, x: torch.Tensor) -> torch.Tensor:
         avgs = []
+        assert self.covars is not None
+        num_covars = self.covars.shape[0]
         for cur_x in x:
-            cur_cf = torch.mean(self.iv_reg_function(cur_x, self.covars))
+            cur_cf = torch.mean(self.iv_reg_function(
+                cur_x.repeat(num_covars).reshape(num_covars, -1),
+                self.covars
+            ))
             avgs.append(cur_cf)
 
         return torch.vstack(avgs)
@@ -146,13 +154,23 @@ class MREstimator(object):
 
 
 class MREstimatorWithUncertainty(MREstimator):
-    def effect_with_prediction_interval(
+    """Estimator that quantifies uncertainty on the IV regression.
+
+    This is only a semantic class, but we use the convention that uncertainty
+    is reflected by providing the alpha / 2, median and 1 - alpha / 2 quantiles
+    in the last dimensions of the tensor.
+
+    For example, the counterfactual y tensor could have shape (N, 1, 3) for a
+    univariable outcome and when the number of samples is N.
+
+    """
+    def iv_reg_function(
         self,
         x: torch.Tensor,
         covars: Optional[torch.Tensor] = None,
-        alpha: float = 0.1
+        alpha: float = 0.05,
     ) -> torch.Tensor:
-        raise NotImplementedError()
+        return super().iv_reg_function(x, covars)
 
 
 class IVDataset(Dataset):

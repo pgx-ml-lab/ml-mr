@@ -31,14 +31,15 @@ def get_conformal_adjustment_sqr(
     # takes taus as a input.
     y_hat_l = model.forward(
         ivs, covars,
-        taus=torch.full_like(y, alpha / 2)
+        taus=torch.full_like(y, alpha)
     )
 
     y_hat_u = model.forward(
         ivs, covars,
-        taus=torch.full_like(y, 1 - alpha / 2)
+        taus=torch.full_like(y, 1 - alpha)
     )
 
+    # TODO: Is this correct?
     scores = torch.maximum(y - y_hat_u, y_hat_l - y)
     q_hat = torch.quantile(
         scores,

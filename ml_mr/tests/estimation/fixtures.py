@@ -3,16 +3,19 @@ from typing import Optional, Callable
 import pytest
 import torch
 
-from ...estimation.core import MREstimator, MREstimatorWithUncertainty
+from ...estimation.core import MREstimator
 
 
 class MREstimatorFromFunction(MREstimator):
     def __init__(
-        self, f: Callable[[torch.Tensor, Optional[torch.Tensor]], torch.Tensor]
+        self,
+        f: Callable[[torch.Tensor, Optional[torch.Tensor]], torch.Tensor],
+        covars: Optional[torch.Tensor] = None
     ):
+        super().__init__(covars)
         self.f = f
 
-    def effect(
+    def iv_reg_function(
         self,
         x: torch.Tensor,
         covars: Optional[torch.Tensor] = None
