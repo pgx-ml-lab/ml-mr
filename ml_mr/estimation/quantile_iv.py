@@ -60,9 +60,8 @@ class ExposureQuantileMLP(MLP):
         activations: Iterable[nn.Module] = [nn.GELU()],
     ):
         """The model will predict q quantiles."""
-        # q = 0, 0.2, 0.4, 0.6, 0.8, 1
         assert q >= 3
-        self.quantiles = torch.linspace(0.01, 0.99, q)
+        self.quantiles = torch.tensor([(i + 1) / (q + 1) for i in range(q)])
 
         loss = QuantileLossMulti(self.quantiles)
 
@@ -143,11 +142,10 @@ class OutcomeMLP(OutcomeMLPBase):
         n_q = exposure_qs.size(1)
 
         y_hat = torch.zeros((mb, 1), device=self.device)  # type: ignore
-        for q1, q2 in zip(range(n_q), range(1, n_q)):
-            midpoints = torch.mean(exposure_qs[:, [q1, q2]], dim=1)
+        for j in range(n_q):
             y_hat += self.mlp(
                 torch.hstack([tens for tens in (
-                    midpoints.reshape(-1, 1), covars, taus
+                    exposure_qs[:, [j]], covars, taus
                 ) if tens is not None])
             )
 
