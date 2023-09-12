@@ -3,7 +3,6 @@ Implementation of an IV method based on estimating quantiles of the exposure
 distribution.
 """
 
-import functools
 import argparse
 import json
 import os
@@ -16,13 +15,13 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, random_split
 
 from ..logging import info
-from ..utils import parse_project_and_run_name, default_validate_args
+from ..utils import default_validate_args, parse_project_and_run_name
+from ..utils.conformal import get_conformal_adjustment_sqr
 from ..utils.models import MLP, OutcomeMLPBase
 from ..utils.quantiles import QuantileLossMulti
-from ..utils.conformal import get_conformal_adjustment_sqr
 from ..utils.training import train_model
-from .core import (IVDatasetWithGenotypes, MREstimator,
-                   MREstimatorWithUncertainty, IVDataset)
+from .core import (IVDataset, IVDatasetWithGenotypes, MREstimator,
+                   MREstimatorWithUncertainty)
 
 # Default values definitions.
 # fmt: off
@@ -62,6 +61,7 @@ class ExposureQuantileMLP(MLP):
     ):
         """The model will predict q quantiles."""
         # q = 0, 0.2, 0.4, 0.6, 0.8, 1
+        assert q >= 3
         self.quantiles = torch.linspace(0.01, 0.99, q)
 
         loss = QuantileLossMulti(self.quantiles)
@@ -163,16 +163,11 @@ class QuantileIVEstimator(MREstimator):
         self.exposure_network = exposure_network
         self.outcome_network = outcome_network
 
-    def effect(
+    def iv_reg_function(
         self, x: torch.Tensor, covars: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        """Mean exposure to outcome effect at values of x."""
-        if x.ndim == 1:
-            x = x.reshape(-1, 1)
-
-        return self.average_treatment_effect(
-            x, covars, self.outcome_network.x_to_y
-        )
+        with torch.no_grad():
+            return self.outcome_network.x_to_y(x, covars)
 
     @classmethod
     def from_results(cls, dir_name: str) -> "QuantileIVEstimator":
@@ -184,6 +179,8 @@ class QuantileIVEstimator(MREstimator):
             os.path.join(dir_name, "outcome_network.ckpt"),
             exposure_network=exposure_network
         )
+
+        outcome_network.eval()  # type: ignore
 
         if outcome_network.hparams.sqr:  # type: ignore
             with open(os.path.join(dir_name, "meta.json"), "rt") as f:
@@ -218,7 +215,7 @@ class QuantileIVEstimatorWithUncertainty(
         # Conformal prediction adjustment.
         self.q_hat = q_hat
 
-    def effect_with_prediction_interval(
+    def iv_reg_function(
         self,
         x: torch.Tensor,
         covars: Optional[torch.Tensor] = None,
@@ -226,24 +223,20 @@ class QuantileIVEstimatorWithUncertainty(
     ) -> torch.Tensor:
         assert self.outcome_network.hparams.sqr  # type: ignore
 
-        if x.ndim == 1:
-            x = x.reshape(-1, 1)
-
-        q = [alpha, 0.5, 1 - alpha]
-
         pred = []
-        for tau in q:
-            x_to_y = functools.partial(self.outcome_network.x_to_y, taus=tau)
-            pred.append(self.average_treatment_effect(x, covars, x_to_y))
+        with torch.no_grad():
+            for tau in [alpha / 2, 0.5, 1 - alpha / 2]:
+                cur_y = self.outcome_network.x_to_y(x, covars, tau)
+                pred.append(cur_y)
 
-        pred_tens = torch.hstack(pred)
+        # n x y dimension x 3 for the values in tau.
+        pred_tens = torch.stack(pred, dim=2)
 
         # Conformal prediction adjustment if set.
-        conformal_adj = [-self.q_hat, 0, self.q_hat]
-        for j in range(3):
-            pred_tens[:, j] = pred_tens[:, j] + conformal_adj[j]
+        pred_tens[:, :, 0] -= self.q_hat
+        pred_tens[:, :, 2] += self.q_hat
 
-        return pred_tens.detach()
+        return pred_tens
 
 
 def main(args: argparse.Namespace) -> None:
@@ -445,6 +438,10 @@ def fit_quantile_iv(
         exposure_network=exposure_network,
     ).eval()  # type: ignore
 
+    # Training the 2nd stage model copies the exposure net to the GPU.
+    # Here, we ensure they're on the same device.
+    exposure_network.to(outcome_network.device)
+
     if sqr:
         # Conformal prediction.
         q_hat = get_conformal_adjustment_sqr(
@@ -548,17 +545,25 @@ def save_estimator_statistics(
     alpha: Optional[float] = None
 ):
     # Save the causal effect at over the domain.
-    xs = torch.linspace(domain[0], domain[1], 500)
+    xs = torch.linspace(domain[0], domain[1], 500).reshape(-1, 1)
 
     if estimator.outcome_network.hparams.sqr and alpha:  # type: ignore
         assert isinstance(estimator, QuantileIVEstimatorWithUncertainty)
-        ys = estimator.effect_with_prediction_interval(xs, covars, alpha=alpha)
+        ys = estimator.iv_reg_function(xs, covars, alpha=alpha)
+
+        if ys.size(1) != 1:
+            raise NotImplementedError(
+                "Saving statistics for multidimensional outcome not "
+                "implemented yet."
+            )
+
         df = pd.DataFrame(
-            torch.hstack((xs.reshape(-1, 1), ys)).numpy(),
+            torch.hstack((xs, ys[:, 0, :])).numpy(),
             columns=["x", "y_do_x_lower", "y_do_x", "y_do_x_upper"]
         )
+
     else:
-        ys = estimator.effect(xs, covars).reshape(-1)
+        ys = estimator.iv_reg_function(xs, covars).reshape(-1)
         df = pd.DataFrame({"x": xs, "y_do_x": ys})
 
     plt.figure()
