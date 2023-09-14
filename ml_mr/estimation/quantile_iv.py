@@ -344,6 +344,7 @@ def train_outcome_model(
 def fit_quantile_iv(
     q: int,
     dataset: IVDataset,
+    stage2_dataset: Optional[IVDataset] = None,  # type: ignore
     output_dir: str = DEFAULTS["output_dir"],  # type: ignore
     validation_proportion: float = DEFAULTS["validation_proportion"],  # type: ignore # noqa: E501
     fast: bool = False,
@@ -380,6 +381,17 @@ def fit_quantile_iv(
         dataset, [1 - validation_proportion, validation_proportion]
     )
 
+    # If there is a separate dataset for stage2, we split it too, otherwise
+    # we reuse the stage 1 dataset.
+    if stage2_dataset is not None:
+        stg2_train_dataset, stg2_val_dataset = random_split(
+            stage2_dataset, [1 - validation_proportion, validation_proportion]
+        )
+    else:
+        stg2_train_dataset, stg2_val_dataset = (
+            train_dataset, val_dataset
+        )
+
     exposure_val_loss = train_exposure_model(
         q=q,
         train_dataset=train_dataset,
@@ -414,8 +426,8 @@ def fit_quantile_iv(
         )
 
     outcome_val_loss = train_outcome_model(
-        train_dataset=train_dataset,
-        val_dataset=val_dataset,
+        train_dataset=stg2_train_dataset,
+        val_dataset=stg2_val_dataset,
         exposure_network=exposure_network,
         output_dir=output_dir,
         hidden=outcome_hidden,
