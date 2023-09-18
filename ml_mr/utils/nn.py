@@ -241,7 +241,7 @@ class GaussianNet(MLP, DensityModel):
         )
 
         self.mu_head = nn.Linear(hidden[-1], 1)
-        self.sigma_head = nn.Linear(hidden[-1], 1)
+        self.sigma2_head = nn.Linear(hidden[-1], 1)
 
     def forward(self, x: torch.Tensor):
         raise NotImplementedError()
@@ -252,12 +252,12 @@ class GaussianNet(MLP, DensityModel):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         z = self.mlp(x)
         mu = self.mu_head(z)
-        sigma = F.softplus(self.sigma_head(z))
-        return mu, sigma
+        sigma2 = F.softplus(self.sigma2_head(z))
+        return mu, sigma2
 
     def sample(self, x, n_samples, device=None):
-        mu, sigma = self.forward_parameters(x)
-        return sigma * torch.randn(n_samples, device=device) + mu
+        mu, sigma2 = self.forward_parameters(x)
+        return sigma2 * torch.randn(n_samples, device=device) + mu
 
     def _step(
         self,
@@ -267,8 +267,8 @@ class GaussianNet(MLP, DensityModel):
     ) -> torch.Tensor:
         x, y = batch
 
-        mu, sigma = self.forward_parameters(x)
-        loss = self.loss(mu, y, sigma)  # type: ignore
+        mu, sigma2 = self.forward_parameters(x)
+        loss = self.loss(mu, y, sigma2)  # type: ignore
 
         self.log(f"{log_prefix}_loss", loss)
 
