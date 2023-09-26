@@ -13,12 +13,11 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, random_split
-import pytorch_lightning as pl
 
 from ..logging import info
 from ..utils import default_validate_args, parse_project_and_run_name
 from ..utils.conformal import get_conformal_adjustment_sqr
-from ..utils.models import MLP, GaussianNet
+from ..utils.models import MLP, OutcomeMLPBase
 from ..utils.quantiles import QuantileLossMulti
 from ..utils.training import train_model
 from .core import (IVDataset, IVDatasetWithGenotypes, MREstimator,
@@ -96,94 +95,67 @@ class ExposureQuantileMLP(MLP):
         return loss
 
 
-class OutcomeGaussianNet(GaussianNet):
+class OutcomeMLP(OutcomeMLPBase):
     def __init__(
         self,
-        exposure_network: pl.LightningModule,
+        exposure_network: ExposureQuantileMLP,
         input_size: int,
         hidden: Iterable[int],
         lr: float,
         weight_decay: float = 0,
+        sqr: bool = False,
         add_input_layer_batchnorm: bool = False,
         add_hidden_layer_batchnorm: bool = False,
         activations: Iterable[nn.Module] = [nn.GELU()]
     ):
         super().__init__(
+            exposure_network=exposure_network,
             input_size=input_size,
             hidden=hidden,
-            add_input_layer_batchnorm=add_input_layer_batchnorm,
-            add_hidden_layer_batchnorm=add_hidden_layer_batchnorm,
-            activations=activations,
             lr=lr,
             weight_decay=weight_decay,
-            _save_hyperparams=False,
+            sqr=sqr,
+            add_input_layer_batchnorm=add_input_layer_batchnorm,
+            add_hidden_layer_batchnorm=add_hidden_layer_batchnorm,
+            activations=activations
         )
-        self.exposure_network = exposure_network
-        self.save_hyperparameters(ignore=["exposure_network"])
 
-    def _step(self, batch, batch_index, log_prefix="train"):
-        _, y, ivs, covars = batch
-
-        mu, var = self.forward(ivs, covars)
-
-        loss = self.loss(mu, y, var)
-
-        self.log(f"outcome_{log_prefix}_loss", loss)
-
-        return loss
-
-    def x_to_y(
-        self,
-        x: torch.Tensor,
-        covars: Optional[torch.Tensor]
-    ) -> torch.Tensor:
-        stack = [x]
-        if covars is not None:
-            stack.append(covars)
-
-        x = torch.hstack(stack)
-
-        mu, _ = self.forward_parameters(x)
-        return mu
-
-    # FIXME type if works well.
     def forward(  # type: ignore
-        self, ivs: torch.Tensor, covars: Optional[torch.Tensor]
+        self,
+        ivs: torch.Tensor,
+        covars: Optional[torch.Tensor],
+        taus: Optional[torch.Tensor] = None
     ):
-        """IV -> exposure net -> pred. quantiles -> outcome."""
+        """Forward pass throught the exposure and outcome models."""
+        if self.hparams.sqr:  # type: ignore
+            assert taus is not None, "Need quantile samples if SQR enabled."
 
-        mb = ivs.size(0)
+        # x is the input to the exposure model.
         exposure_net_xs = torch.hstack(
             [tens for tens in (ivs, covars) if tens is not None]
         )
 
         with torch.no_grad():
-            exposure_qs = self.exposure_network.forward(exposure_net_xs)
+            x_hat = torch.mean(  # type: ignore
+                self.exposure_network.forward(exposure_net_xs),
+                axis=1,
+                keepdim=True
+            )
 
-        n_q = exposure_qs.size(1)
+        y_hat = self.mlp(
+            torch.hstack([tens for tens in (
+                x_hat, covars, taus
+            ) if tens is not None])
+        )
 
-        mu = torch.zeros((mb, 1), device=self.device)  # type: ignore
-        var = torch.zeros((mb, 1), device=self.device)  # type: ignore
-        for j in range(n_q):
-            outcome_net_xs = torch.hstack([
-                tens for tens in (
-                    exposure_qs[:, [j]], covars
-                ) if tens is not None
-            ])
-
-            cur_mu, cur_var = self.forward_parameters(outcome_net_xs)
-
-            mu += cur_mu / n_q
-            var += cur_var / n_q
-
-        return mu, var
+        return y_hat
 
 
 class QuantileIVEstimator(MREstimator):
     def __init__(
         self,
         exposure_network: ExposureQuantileMLP,
-        outcome_network: OutcomeGaussianNet,
+        outcome_network: OutcomeMLP,
     ):
         self.exposure_network = exposure_network
         self.outcome_network = outcome_network
@@ -200,23 +172,26 @@ class QuantileIVEstimator(MREstimator):
             os.path.join(dir_name, "exposure_network.ckpt")
         )
 
-        outcome_network = OutcomeGaussianNet.load_from_checkpoint(
+        outcome_network = OutcomeMLP.load_from_checkpoint(
             os.path.join(dir_name, "outcome_network.ckpt"),
             exposure_network=exposure_network
         )
 
         outcome_network.eval()  # type: ignore
 
-        with open(os.path.join(dir_name, "meta.json"), "rt") as f:
-            meta = json.load(f)
-            q_hat = meta.get("q_hat", 0)
+        if outcome_network.hparams.sqr:  # type: ignore
+            with open(os.path.join(dir_name, "meta.json"), "rt") as f:
+                meta = json.load(f)
+                q_hat = meta.get("q_hat", 0)
 
-        return QuantileIVEstimatorWithUncertainty(
-            exposure_network,
-            outcome_network,
-            alpha=0.1,
-            q_hat=q_hat
-        )
+            return QuantileIVEstimatorWithUncertainty(
+                exposure_network,
+                outcome_network,
+                alpha=0.1,
+                q_hat=q_hat
+            )
+
+        return cls(exposure_network, outcome_network)
 
 
 class QuantileIVEstimatorWithUncertainty(
@@ -226,7 +201,7 @@ class QuantileIVEstimatorWithUncertainty(
     def __init__(
         self,
         exposure_network: ExposureQuantileMLP,
-        outcome_network: OutcomeGaussianNet,
+        outcome_network: OutcomeMLP,
         alpha: float = 0.1,
         q_hat: Union[float, torch.Tensor] = 0
     ):
@@ -243,18 +218,16 @@ class QuantileIVEstimatorWithUncertainty(
         covars: Optional[torch.Tensor] = None,
         alpha: float = 0.05
     ) -> torch.Tensor:
-        with torch.no_grad():
-            stack = [x]
-            if covars is not None:
-                stack.append(covars)
+        assert self.outcome_network.hparams.sqr  # type: ignore
 
-            mu, sigma = self.outcome_network.forward_parameters(
-                torch.hstack(stack)
-            )
-            # n x y dimension x 3 for the values in tau.
-            pred_tens = torch.stack([
-                mu - 1.96 * sigma, mu, mu + 1.96 * sigma
-            ], dim=2)
+        pred = []
+        with torch.no_grad():
+            for tau in [alpha / 2, 0.5, 1 - alpha / 2]:
+                cur_y = self.outcome_network.x_to_y(x, covars, tau)
+                pred.append(cur_y)
+
+        # n x y dimension x 3 for the values in tau.
+        pred_tens = torch.stack(pred, dim=2)
 
         # Conformal prediction adjustment if set.
         pred_tens[:, :, 0] -= self.q_hat
@@ -280,6 +253,7 @@ def main(args: argparse.Namespace) -> None:
         q=args.q,
         dataset=dataset,
         fast=args.fast,
+        sqr=not args.no_sqr,
         wandb_project=args.wandb_project,
         **kwargs,
     )
@@ -342,13 +316,14 @@ def train_outcome_model(
 ) -> float:
     info("Training outcome model.")
     n_covars = train_dataset[0][3].numel()
-    model = OutcomeGaussianNet(
+    model = OutcomeMLP(
         exposure_network=exposure_network,
         input_size=1 + n_covars,
         lr=learning_rate,
         weight_decay=weight_decay,
         hidden=hidden,
         add_input_layer_batchnorm=add_input_batchnorm,
+        sqr=sqr
     )
 
     return train_model(
@@ -368,9 +343,11 @@ def train_outcome_model(
 def fit_quantile_iv(
     q: int,
     dataset: IVDataset,
+    stage2_dataset: Optional[IVDataset] = None,  # type: ignore
     output_dir: str = DEFAULTS["output_dir"],  # type: ignore
     validation_proportion: float = DEFAULTS["validation_proportion"],  # type: ignore # noqa: E501
     fast: bool = False,
+    sqr: bool = True,
     exposure_hidden: List[int] = DEFAULTS["exposure_hidden"],  # type: ignore
     exposure_learning_rate: float = DEFAULTS["exposure_learning_rate"],  # type: ignore # noqa: E501
     exposure_weight_decay: float = DEFAULTS["exposure_weight_decay"],  # type: ignore # noqa: E501
@@ -402,6 +379,17 @@ def fit_quantile_iv(
     train_dataset, val_dataset = random_split(
         dataset, [1 - validation_proportion, validation_proportion]
     )
+
+    # If there is a separate dataset for stage2, we split it too, otherwise
+    # we reuse the stage 1 dataset.
+    if stage2_dataset is not None:
+        stg2_train_dataset, stg2_val_dataset = random_split(
+            stage2_dataset, [1 - validation_proportion, validation_proportion]
+        )
+    else:
+        stg2_train_dataset, stg2_val_dataset = (
+            train_dataset, val_dataset
+        )
 
     exposure_val_loss = train_exposure_model(
         q=q,
@@ -437,8 +425,8 @@ def fit_quantile_iv(
         )
 
     outcome_val_loss = train_outcome_model(
-        train_dataset=train_dataset,
-        val_dataset=val_dataset,
+        train_dataset=stg2_train_dataset,
+        val_dataset=stg2_val_dataset,
         exposure_network=exposure_network,
         output_dir=output_dir,
         hidden=outcome_hidden,
@@ -448,12 +436,13 @@ def fit_quantile_iv(
         add_input_batchnorm=outcome_add_input_batchnorm,
         max_epochs=outcome_max_epochs,
         accelerator=accelerator,
+        sqr=sqr,
         wandb_project=wandb_project
     )
 
     meta["outcome_val_loss"] = outcome_val_loss
 
-    outcome_network = OutcomeGaussianNet.load_from_checkpoint(
+    outcome_network = OutcomeMLP.load_from_checkpoint(
         os.path.join(output_dir, "outcome_network.ckpt"),
         exposure_network=exposure_network,
     ).eval()  # type: ignore
@@ -462,20 +451,21 @@ def fit_quantile_iv(
     # Here, we ensure they're on the same device.
     exposure_network.to(outcome_network.device)
 
-    ### # Conformal prediction.
-    ### q_hat = get_conformal_adjustment_sqr(
-    ###     outcome_network, val_dataset, alpha=0.1  # type: ignore
-    ### )
-    ### info(f"Conformal adjustment estimated at q_hat={q_hat}.")
+    if sqr:
+        # Conformal prediction.
+        q_hat = get_conformal_adjustment_sqr(
+            outcome_network, val_dataset, alpha=0.1  # type: ignore
+        )
+        info(f"Conformal adjustment estimated at q_hat={q_hat}.")
 
-    ### meta["q_hat"] = q_hat
-    meta["q_hat"] = 1
+        meta["q_hat"] = q_hat
 
-    estimator: QuantileIVEstimator = QuantileIVEstimatorWithUncertainty(
-        exposure_network, outcome_network, alpha=0.1
-    )
-    ### else:
-    ###     estimator = QuantileIVEstimator(exposure_network, outcome_network)
+        # TODO make the conformal adjustment opt out.
+        estimator: QuantileIVEstimator = QuantileIVEstimatorWithUncertainty(
+            exposure_network, outcome_network, alpha=0.1, q_hat=q_hat
+        )
+    else:
+        estimator = QuantileIVEstimator(exposure_network, outcome_network)
 
     # Save the metadata, estimator statistics and log artifact to WandB if
     # required.
@@ -488,7 +478,7 @@ def fit_quantile_iv(
             covars,
             domain=meta["domain"],
             output_prefix=os.path.join(output_dir, "causal_estimates"),
-            alpha=0.1
+            alpha=0.1 if sqr else None
         )
 
     if wandb_project is not None:
@@ -561,25 +551,29 @@ def save_estimator_statistics(
     covars: Optional[torch.Tensor],
     domain: Tuple[float, float],
     output_prefix: str = "causal_estimates",
-    alpha: Optional[float] = 0.1
+    alpha: Optional[float] = None
 ):
     # Save the causal effect at over the domain.
     xs = torch.linspace(domain[0], domain[1], 500).reshape(-1, 1)
 
-    assert isinstance(estimator, QuantileIVEstimatorWithUncertainty)
-    assert alpha is not None
-    ys = estimator.iv_reg_function(xs, covars, alpha=alpha)
+    if estimator.outcome_network.hparams.sqr and alpha:  # type: ignore
+        assert isinstance(estimator, QuantileIVEstimatorWithUncertainty)
+        ys = estimator.iv_reg_function(xs, covars, alpha=alpha)
 
-    if ys.size(1) != 1:
-        raise NotImplementedError(
-            "Saving statistics for multidimensional outcome not "
-            "implemented yet."
+        if ys.size(1) != 1:
+            raise NotImplementedError(
+                "Saving statistics for multidimensional outcome not "
+                "implemented yet."
+            )
+
+        df = pd.DataFrame(
+            torch.hstack((xs, ys[:, 0, :])).numpy(),
+            columns=["x", "y_do_x_lower", "y_do_x", "y_do_x_upper"]
         )
 
-    df = pd.DataFrame(
-        torch.hstack((xs, ys[:, 0, :])).numpy(),
-        columns=["x", "y_do_x_lower", "y_do_x", "y_do_x_upper"]
-    )
+    else:
+        ys = estimator.iv_reg_function(xs, covars).reshape(-1)
+        df = pd.DataFrame({"x": xs.reshape(-1), "y_do_x": ys})
 
     plt.figure()
     plt.scatter(df["x"], df["y_do_x"], label="Estimated Y | do(X=x)", s=3)
@@ -627,6 +621,13 @@ def configure_argparse(parser) -> None:
         "--fast",
         help="Disable plotting and logging of causal effects.",
         action="store_true",
+    )
+
+    parser.add_argument(
+        "--no-sqr",
+        help="Disable simultaneous quantile regression to estimate a "
+        "prediction interval.",
+        action="store_true"
     )
 
     parser.add_argument(
