@@ -131,25 +131,24 @@ class OutcomeMLP(OutcomeMLPBase):
             assert taus is not None, "Need quantile samples if SQR enabled."
 
         # x is the input to the exposure model.
-        mb = ivs.size(0)
         exposure_net_xs = torch.hstack(
             [tens for tens in (ivs, covars) if tens is not None]
         )
 
         with torch.no_grad():
-            exposure_qs = self.exposure_network.forward(exposure_net_xs)
-
-        n_q = exposure_qs.size(1)
-
-        y_hat = torch.zeros((mb, 1), device=self.device)  # type: ignore
-        for j in range(n_q):
-            y_hat += self.mlp(
-                torch.hstack([tens for tens in (
-                    exposure_qs[:, [j]], covars, taus
-                ) if tens is not None])
+            x_hat = torch.mean(  # type: ignore
+                self.exposure_network.forward(exposure_net_xs),
+                axis=1,
+                keepdim=True
             )
 
-        return y_hat / n_q
+        y_hat = self.mlp(
+            torch.hstack([tens for tens in (
+                x_hat, covars, taus
+            ) if tens is not None])
+        )
+
+        return y_hat
 
 
 class QuantileIVEstimator(MREstimator):
@@ -574,7 +573,7 @@ def save_estimator_statistics(
 
     else:
         ys = estimator.iv_reg_function(xs, covars).reshape(-1)
-        df = pd.DataFrame({"x": xs, "y_do_x": ys})
+        df = pd.DataFrame({"x": xs.reshape(-1), "y_do_x": ys})
 
     plt.figure()
     plt.scatter(df["x"], df["y_do_x"], label="Estimated Y | do(X=x)", s=3)
