@@ -6,7 +6,7 @@ distribution.
 import argparse
 import json
 import os
-from typing import Iterable, List, Optional, Tuple, Union
+from typing import Iterable, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -190,13 +190,11 @@ class QuantileIVEstimator(MREstimator):
         if outcome_network.hparams.sqr:  # type: ignore
             with open(os.path.join(dir_name, "meta.json"), "rt") as f:
                 meta = json.load(f)
-                q_hat = meta.get("q_hat", 0)
 
             return QuantileIVEstimatorWithUncertainty(
                 exposure_network,
                 outcome_network,
-                alpha=0.1,
-                q_hat=q_hat
+                meta
             )
 
         return cls(exposure_network, outcome_network)
@@ -210,39 +208,42 @@ class QuantileIVEstimatorWithUncertainty(
         self,
         exposure_network: ExposureQuantileMLP,
         outcome_network: OutcomeMLP,
-        conformal_score: NONCONFORMITY_MEASURES_TYPE,
-        conformal_alpha: float,
         meta: dict
     ):
         self.exposure_network = exposure_network
         self.outcome_network = outcome_network
-        self.alpha = conformal_alpha
 
         # Conformal prediction adjustment.
-        self.q_hat = meta["q_hat"]
+        self.conformal_score: NONCONFORMITY_MEASURES_TYPE =\
+            meta["conformal_score"]
+        assert self.conformal_score in NONCONFORMITY_MEASURES
+
+        self.meta = meta
 
     def iv_reg_function(
         self,
         x: torch.Tensor,
         covars: Optional[torch.Tensor] = None,
-        alpha: float = 0.05
+        alpha: float = 0.1
     ) -> torch.Tensor:
-        assert self.outcome_network.hparams.sqr  # type: ignore
+        if self.conformal_score == "sqr":
+            alpha = self.meta["conformal_alpha_level"]
+            pred = []
+            with torch.no_grad():
+                for tau in [alpha / 2, 0.5, 1 - alpha / 2]:
+                    cur_y = self.outcome_network.x_to_y(x, covars, tau)
+                    pred.append(cur_y)
 
-        pred = []
-        with torch.no_grad():
-            for tau in [alpha / 2, 0.5, 1 - alpha / 2]:
-                cur_y = self.outcome_network.x_to_y(x, covars, tau)
-                pred.append(cur_y)
+            # n x y dimension x 3 for the values in tau.
+            pred_tens = torch.stack(pred, dim=2)
 
-        # n x y dimension x 3 for the values in tau.
-        pred_tens = torch.stack(pred, dim=2)
+            # Conformal prediction adjustment if set.
+            pred_tens[:, :, 0] -= self.meta["q_hat"]
+            pred_tens[:, :, 2] += self.meta["q_hat"]
 
-        # Conformal prediction adjustment if set.
-        pred_tens[:, :, 0] -= self.q_hat
-        pred_tens[:, :, 2] += self.q_hat
+            return pred_tens
 
-        return pred_tens
+        raise NotImplementedError()
 
 
 def main(args: argparse.Namespace) -> None:
@@ -470,11 +471,17 @@ def fit_quantile_iv(
     exposure_network.to(outcome_network.device)
 
     if conformal_score is not None:
-        fit_conformal(outcome_network, conformal_score, val_dataset, meta,
-                      alpha=conformal_alpha_level)
+        assert conformal_alpha_level is not None
+        fit_conformal(
+            outcome_network,
+            conformal_score,
+            val_dataset,  # type: ignore
+            meta,
+            alpha=conformal_alpha_level
+        )
 
         estimator: QuantileIVEstimator = QuantileIVEstimatorWithUncertainty(
-            exposure_network, outcome_network, alpha=0.1, q_hat=estimate_q_hat
+            exposure_network, outcome_network, meta
         )
     else:
         estimator = QuantileIVEstimator(exposure_network, outcome_network)
@@ -490,7 +497,7 @@ def fit_quantile_iv(
             covars,
             domain=meta["domain"],
             output_prefix=os.path.join(output_dir, "causal_estimates"),
-            alpha=0.1 if sqr else None
+            alpha=conformal_alpha_level
         )
 
     if wandb_project is not None:

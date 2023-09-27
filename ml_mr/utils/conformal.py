@@ -49,7 +49,7 @@ def nonconformity_sqr(
     alpha: float = 0.1
 ) -> torch.Tensor:
     dl = FullBatchDataLoader(dataset)
-    _, y, ivs, covars = dl
+    _, y, ivs, covars = next(iter(dl))
 
     # We assume the provided model is trained with quantile regression and
     # takes taus as a input.
