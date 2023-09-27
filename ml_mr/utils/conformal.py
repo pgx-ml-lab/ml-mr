@@ -2,7 +2,7 @@
 Utilities for conformal prediction.
 """
 
-from typing import Optional, Union
+from typing import Optional, Union, Literal
 import math
 
 import torch
@@ -11,21 +11,45 @@ from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 
 import numpy as np
-from ..estimation.core import IVDataset
+from ..estimation.core import IVDataset, FullBatchDataLoader
 from .nn import MLP, OutcomeMLPBase
 
 
+NONCONFORMITY_MEASURES = {
+    "sqr",
+    "residual-aux-nn",
+    "gaussian-nn"
+}
+NONCONFORMITY_MEASURES_TYPE = Literal["sqr", "residual-aux-nn", "gaussian-nn"]
+
+
+def estimate_q_hat(
+    scores: torch.Tensor,
+    alpha: float = 0.1
+) -> float:
+    n = scores.size(0)
+    if scores.ndim == 2:
+        scores = scores.reshape(-1)
+    elif scores.ndim > 2:
+        raise ValueError("Can't interpret tensor as 1d vector.")
+
+    q_hat = torch.quantile(
+        scores,
+        math.ceil((n+1)*(1-alpha)) / n,
+        interpolation="higher"
+    )
+
+    return q_hat.item()
+
+
 @torch.no_grad()
-def get_conformal_adjustment_sqr(
+def nonconformity_sqr(
     model: pl.LightningModule,
     dataset: IVDataset,
     alpha: float = 0.1
-) -> float:
-    n = len(dataset)
-    assert isinstance(n, int)
-
-    dl = DataLoader(dataset, batch_size=n)
-    _, y, ivs, covars = next(iter(dl))
+) -> torch.Tensor:
+    dl = FullBatchDataLoader(dataset)
+    _, y, ivs, covars = dl
 
     # We assume the provided model is trained with quantile regression and
     # takes taus as a input.
@@ -39,15 +63,7 @@ def get_conformal_adjustment_sqr(
         taus=torch.full_like(y, 1 - alpha)
     )
 
-    # TODO: Is this correct?
-    scores = torch.maximum(y - y_hat_u, y_hat_l - y)
-    q_hat = torch.quantile(
-        scores,
-        math.ceil((n+1)*(1-alpha)) / n,
-        interpolation="higher"
-    )
-
-    return q_hat.item()
+    return torch.maximum(y - y_hat_u, y_hat_l - y)
 
 
 class OutcomeResidualPrediction(MLP):
