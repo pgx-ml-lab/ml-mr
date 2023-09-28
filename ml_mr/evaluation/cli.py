@@ -19,6 +19,7 @@ import numpy as np
 
 from ..estimation import MODELS, MREstimator, MREstimatorWithUncertainty
 from .metrics import mse, mean_prediction_interval_absolute_width
+from .plotting import plot_iv_reg
 from ..logging import warn, info, debug
 
 
@@ -95,61 +96,6 @@ def parse_args(argv):
     return parser.parse_args(argv)
 
 
-def plot(
-    estimator: MREstimator,
-    true_function: Callable[[torch.Tensor], torch.Tensor],
-    domain: Tuple[float, float] = (-3, 3),
-    covars: Optional[torch.Tensor] = None,
-    label: str = "Predicted Y",
-    plot_structural: bool = True,
-    n_points: int = 5000,
-    alpha: float = 0.1
-):
-    import matplotlib.pyplot as plt
-
-    xs = torch.linspace(domain[0], domain[1], n_points).reshape(-1, 1)
-
-    uncertainty = False
-    if isinstance(estimator, MREstimatorWithUncertainty):
-        uncertainty = True
-        y_hat_ci = estimator.iv_reg_function(
-            xs, covars, alpha=alpha
-        )
-        y_hat_l = y_hat_ci[:, :, 0]
-        y_hat = y_hat_ci[:, :, 1]
-        y_hat_u = y_hat_ci[:, :, 2]
-    else:
-        y_hat = estimator.iv_reg_function(xs, covars)
-
-    true_y = true_function(xs)
-
-    if plot_structural:
-        plt.plot(
-            xs.numpy(),
-            true_y.numpy().reshape(-1),
-            ls="--",
-            color="#9C0D00",
-            lw=2,
-            label="True Y",
-            zorder=2
-        )
-
-    plt.plot(
-        xs.numpy().flatten(),
-        y_hat.numpy().reshape(-1),
-        label=label
-    )
-    if uncertainty:
-        plt.fill_between(
-            xs.numpy().flatten(),
-            y_hat_l.numpy().reshape(-1),
-            y_hat_u.numpy().reshape(-1),
-            zorder=-1,
-            color="#aaaaaa",
-            alpha=0.2
-        )
-
-
 def main():
     args = parse_args(sys.argv[2:])
     writer = csv.writer(sys.stdout)
@@ -192,7 +138,7 @@ def main():
     header.extend(args.meta_keys)
     writer.writerow(header)
 
-    # Load MREstimator.
+    ax = None
     n_plotted = 0
     for input in args.input:
         # Try to detect model type.
@@ -270,21 +216,22 @@ def main():
             elif n_plotted > max_plots:
                 pass
             else:
-                plot(
+                ax = plot_iv_reg(
                     estimator,
                     true_function,
                     domain=(domain_lower, domain_upper),
                     covars=covars,
                     label=input,
                     plot_structural=True if n_plotted == 0 else False,
-                    alpha=args.alpha
+                    alpha=args.alpha,
+                    ax=ax
                 )
                 n_plotted += 1
 
     if args.plot:
         # Finalize and show figure.
-        plt.xticks(fontsize=16)
-        plt.yticks(fontsize=16)
+        ax.set_xticks(fontsize=16)
+        ax.set_yticks(fontsize=16)
         plt.legend(prop={"size": 14})
         plt.tight_layout()
 
