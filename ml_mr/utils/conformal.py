@@ -17,10 +17,13 @@ from .nn import MLP, OutcomeMLPBase
 
 NONCONFORMITY_MEASURES = {
     "sqr",
+    "quantile-reg",
     "residual-aux-nn",
     "gaussian-nn"
 }
-NONCONFORMITY_MEASURES_TYPE = Literal["sqr", "residual-aux-nn", "gaussian-nn"]
+NONCONFORMITY_MEASURES_TYPE = Literal[
+    "sqr", "quantile-reg", "residual-aux-nn", "gaussian-nn"
+]
 
 
 def estimate_q_hat(
@@ -40,6 +43,22 @@ def estimate_q_hat(
     )
 
     return q_hat.item()
+
+
+@torch.no_grad()
+def nonconformity_quantile_reg(
+    model: pl.LightningModule,
+    dataset: IVDataset,
+) -> torch.Tensor:
+    dl = FullBatchDataLoader(dataset)
+    _, y, ivs, covars = next(iter(dl))
+
+    y_hat = model.forward(ivs, covars)
+    del ivs
+    del covars
+    y_hat = y_hat.reshape(-1, 1, 3)
+
+    return torch.maximum(y_hat[:, 0, [0]] - y, y - y_hat[:, 0, [2]])
 
 
 @torch.no_grad()
