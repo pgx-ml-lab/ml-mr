@@ -178,7 +178,7 @@ class SweepConfig:
     ):
         self.dataset_config = dataset_config
         self.model = model
-        self.sweep_directory = sweep_directory
+        self.sweep_directory = os.path.abspath(sweep_directory)
         self.parameters = parameters
         self.max_runs = max_runs
 
@@ -253,7 +253,9 @@ def parse_config(filename: str) -> SweepConfig:
     # Parse the sweep config.
     sweep_conf = config.get("sweep", {})
     max_runs = sweep_conf.get("max_runs", 10_000)  # Default max is 10k runs.
-    sweep_directory = sweep_conf.get("sweep_directory", "ml_mr_sweep")
+    sweep_directory = os.path.abspath(
+        sweep_conf.get("sweep_directory", "ml_mr_sweep")
+    )
     model = sweep_conf["model"]
 
     if model not in MODELS:
@@ -499,7 +501,8 @@ def worker(
             )
             t1 = time.time()
             delta_t = t1 - t0
-        except:  # noqa: E722
+        except Exception as e:  # noqa: E722
+            print(e)
             failed = "true"
 
         finally:

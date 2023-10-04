@@ -432,7 +432,6 @@ def main(args: argparse.Namespace) -> None:
     kwargs = {k: v for k, v in vars(args).items() if k in DEFAULTS.keys()}
 
     fit_quantile_iv(
-        n_quantiles=args.q,
         dataset=dataset,
         fast=args.fast,
         wandb_project=args.wandb_project,
@@ -808,8 +807,8 @@ def save_estimator_statistics(
     # Save the causal effect at over the domain.
     xs = torch.linspace(domain[0], domain[1], 500).reshape(-1, 1)
 
-    if estimator.outcome_network.hparams.sqr and alpha:  # type: ignore
-        assert isinstance(estimator, QuantileIVEstimatorWithUncertainty)
+    if isinstance(estimator, QuantileIVEstimatorWithUncertainty):
+        assert alpha is not None
         ys = estimator.iv_reg_function(xs, covars, alpha=alpha)
 
         if ys.size(1) != 1:
