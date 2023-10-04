@@ -140,6 +140,7 @@ def main():
     writer.writerow(header)
 
     n_plotted = 0
+    n_input = len(args.input)
     for input in args.input:
         # Try to detect model type.
         meta_filename = os.path.join(input, "meta.json")
@@ -224,7 +225,8 @@ def main():
                     label=input,
                     plot_structural=True if n_plotted == 0 else False,
                     alpha=args.alpha,
-                    ax=ax
+                    ax=ax,
+                    multi_run=n_input > 1
                 )
                 n_plotted += 1
 
