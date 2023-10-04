@@ -9,7 +9,7 @@ from ..estimation import MREstimator, MREstimatorWithUncertainty
 def mse(
     estimator: MREstimator,
     true_function: Callable[[torch.Tensor], torch.Tensor],
-    domain: Tuple[float, float] = (-3, 3),
+    domain: Tuple[float, float],
     covars: Optional[torch.Tensor] = None,
     n_points: int = 5000
 ) -> float:
@@ -24,9 +24,29 @@ def mse(
     return F.mse_loss(y_hat, true_y).item()
 
 
+def mean_coverage(
+    estimator: MREstimatorWithUncertainty,
+    true_function: Callable[[torch.Tensor], torch.Tensor],
+    domain: Tuple[float, float],
+    covars: Optional[torch.Tensor] = None,
+    n_points: int = 5000
+) -> float:
+    assert isinstance(estimator, MREstimatorWithUncertainty)
+    xs = torch.linspace(domain[0], domain[1], n_points).reshape(-1, 1)
+    pred = estimator.iv_reg_function(xs, covars)
+
+    true_y = true_function(xs)
+    coverage = torch.mean(
+        ((pred[:, 0, 0] <= true_y) &
+         (true_y <= pred[:, 0, 2])).to(torch.float32)
+    ).item()
+
+    return coverage
+
+
 def mean_prediction_interval_absolute_width(
     estimator: MREstimatorWithUncertainty,
-    domain: Tuple[float, float] = (-3, 3),
+    domain: Tuple[float, float],
     covars: Optional[torch.Tensor] = None,
     alpha: float = 0.1,
     n_points: int = 5000,

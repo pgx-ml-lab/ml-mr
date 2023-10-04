@@ -7,20 +7,24 @@ Command-line interface entry-point for all tasks related to model evaluation.
 
 """
 
-from typing import Tuple, Callable, Optional
-import sys
-import csv
-import os
-import json
 import argparse
+import csv
+import json
+import os
+import sys
+from typing import Callable, Optional, Tuple
 
-import torch
 import numpy as np
+import torch
 
-from ..estimation import MODELS, MREstimator, MREstimatorWithUncertainty
-from .metrics import mse, mean_prediction_interval_absolute_width
+from ..estimation import MODELS, MREstimatorWithUncertainty
+from ..logging import debug, info, warn
+from .metrics import (
+    mean_coverage,
+    mean_prediction_interval_absolute_width,
+    mse
+)
 from .plotting import plot_iv_reg
-from ..logging import warn, info, debug
 
 
 def parse_args(argv):
@@ -135,7 +139,7 @@ def main():
         _, ax = plt.subplots(1, 1, figsize=(8, 6))
 
     # Header
-    header = ["filename", "mse", "pred_interval_width"]
+    header = ["filename", "mse", "mean_pred_interval_width", "mean_coverage"]
     header.extend(args.meta_keys)
     writer.writerow(header)
 
@@ -197,12 +201,19 @@ def main():
         row = [input, cur_mse]
         if isinstance(estimator, MREstimatorWithUncertainty):
             width = mean_prediction_interval_absolute_width(
-                estimator, [domain_lower, domain_upper],
+                estimator, (domain_lower, domain_upper),
                 covars=covars, alpha=args.alpha
             )
             row.append(width)
+
+            coverage = mean_coverage(
+                estimator, true_function, (domain_lower, domain_upper),
+                covars=covars
+            )
+            row.append(coverage)
+
         else:
-            row.append("")  # No prediction interval width
+            row.append("", "")  # No prediction interval width and coverage
 
         row.extend(meta_values)
         writer.writerow(row)

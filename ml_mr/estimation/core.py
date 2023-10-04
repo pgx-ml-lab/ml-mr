@@ -383,6 +383,28 @@ class IVDataset(Dataset):
         )
 
 
+class BootstrapIVDataset(IVDataset):
+    def __init__(
+        self,
+        exposure: torch.Tensor,
+        outcome: torch.Tensor,
+        ivs: torch.Tensor,
+        covariables: torch.Tensor = torch.Tensor()
+    ):
+        super().__init__(exposure, outcome, ivs, covariables)
+        # Resample with replacement.
+        n = len(self)
+        self.bootstrap_idx = torch.multinomial(
+            torch.ones(n),
+            n,
+            replacement=True
+        )
+
+    def __getitem__(self, idx: int) -> IVDatasetBatch:
+        bs_idx = int(self.bootstrap_idx[idx].item())
+        return super().__getitem__(bs_idx)
+
+
 class FullBatchDataLoader(DataLoader):
     def __init__(self, dataset: Dataset):
         super().__init__(dataset, batch_size=len(dataset))  # type: ignore
