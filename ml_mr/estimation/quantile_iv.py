@@ -18,9 +18,10 @@ from ..logging import info
 from ..utils import default_validate_args, parse_project_and_run_name
 from ..utils.conformal import (
     NONCONFORMITY_MEASURES_TYPE, NONCONFORMITY_MEASURES,
-    nonconformity_sqr, nonconformity_quantile_reg, estimate_q_hat
+    nonconformity_sqr, nonconformity_quantile_reg, nonconformity_gaussian_nn,
+    estimate_q_hat
 )
-from ..utils.models import MLP, OutcomeMLPBase
+from ..utils.models import MLP, GaussianNet, OutcomeMLPBase
 from ..utils.quantiles import QuantileLossMulti
 from ..utils.training import train_model
 from .core import (IVDataset, IVDatasetWithGenotypes, MREstimator,
@@ -222,6 +223,62 @@ class OutcomeMLP(OutcomeMLPBase):
         return y_hat
 
 
+class OutcomeGaussianNet(GaussianNet):
+    def __init__(
+        self,
+        exposure_network: ExposureQuantileMLP,
+        input_size: int,
+        hidden: Iterable[int],
+        lr: float,
+        weight_decay: float = 0,
+        add_input_layer_batchnorm: bool = False,
+        add_hidden_layer_batchnorm: bool = False,
+        activations: Iterable[nn.Module] = [nn.GELU()]
+    ):
+        super().__init__(
+            input_size=input_size,
+            hidden=hidden,
+            add_input_layer_batchnorm=add_input_layer_batchnorm,
+            add_hidden_layer_batchnorm=add_hidden_layer_batchnorm,
+            activations=activations,
+            lr=lr,
+            weight_decay=weight_decay,
+            _save_hyperparams=False,
+        )
+        self.exposure_network = exposure_network
+        self.save_hyperparameters(ignore=["exposure_network"])
+
+    def _step(self, batch, batch_index, log_prefix="train"):
+        _, y, ivs, covars = batch
+
+        mu, var = self.forward(ivs, covars)
+        loss = self.loss(mu, y, var)
+
+        self.log(f"outcome_{log_prefix}_loss", loss)
+
+        return loss
+
+    def x_to_y(
+        self,
+        x: torch.Tensor,
+        covars: Optional[torch.Tensor]
+    ) -> torch.Tensor:
+        if covars is not None:
+            x = torch.hstack((x, covars))
+
+        # forward parameters is the default forward pass for gaussian net.
+        # Won't go through the exposure network.
+        return self.forward_parameters(x)
+
+    def forward(  # type: ignore
+        self, ivs: torch.Tensor, covars: Optional[torch.Tensor]
+    ):
+        """IV -> exposure net -> pred. quantiles -> outcome."""
+
+        x_hat = _qiv_zc_to_x_hat(ivs, covars, self.exposure_network)
+        return self.x_to_y(x_hat, covars)
+
+
 def _qiv_zc_to_x_hat(
     ivs: torch.Tensor,
     covars: Optional[torch.Tensor],
@@ -265,8 +322,13 @@ class QuantileIVEstimator(MREstimator):
             os.path.join(dir_name, "exposure_network.ckpt")
         )
 
+        # Get the right class for the outcome model.
         if meta["conformal_score"] == "quantile-reg":
             outcome_cls = OutcomeQuantileRegMLP
+        elif meta["conformal_score"] == "gaussian-nn":
+            outcome_cls = OutcomeGaussianNet  # type: ignore
+        elif meta["conformal_score"] not in NONCONFORMITY_MEASURES:
+            raise ValueError(meta["conformal_score"])
         else:
             outcome_cls = OutcomeMLP  # type: ignore
 
@@ -313,11 +375,11 @@ class QuantileIVEstimatorWithUncertainty(
         covars: Optional[torch.Tensor] = None,
         alpha: float = 0.1
     ) -> torch.Tensor:
-        if self.conformal_score == "sqr":
-            if alpha != self.meta["conformal_alpha_level"]:
-                raise ValueError("Conformal prediction tuned for alpha = {}"
-                                 "".format(self.meta["conformal_alpha_level"]))
+        if alpha != self.meta["conformal_alpha_level"]:
+            raise ValueError("Conformal prediction tuned for alpha = {}"
+                                "".format(self.meta["conformal_alpha_level"]))
 
+        if self.conformal_score == "sqr":
             alpha = self.meta["conformal_alpha_level"]
             pred = []
             with torch.no_grad():
@@ -335,10 +397,6 @@ class QuantileIVEstimatorWithUncertainty(
             return pred_tens
 
         if self.conformal_score == "quantile-reg":
-            if alpha != self.meta["conformal_alpha_level"]:
-                raise ValueError("Conformal prediction tuned for alpha = {}"
-                                 "".format(self.meta["conformal_alpha_level"]))
-
             with torch.no_grad():
                 ys = self.outcome_network.x_to_y(x, covars)
 
@@ -346,6 +404,16 @@ class QuantileIVEstimatorWithUncertainty(
                 ys[:, :, 2] += self.meta["q_hat"]
 
                 return ys
+
+        if self.conformal_score == "gaussian-nn":
+            with torch.no_grad():
+                mu_y, var_y = self.outcome_network.x_to_y(x, covars)
+                sigma_y = torch.sqrt(var_y)
+                out = mu_y.reshape(-1, 1, 1).repeat(1, 1, 3)
+                out[:, 0, [0]] -= sigma_y * self.meta["q_hat"]
+                out[:, 0, [2]] += sigma_y * self.meta["q_hat"]
+
+                return out
 
         raise NotImplementedError()
 
@@ -435,7 +503,6 @@ def train_outcome_model(
         conformal_score == "sqr" or
         conformal_score == "residual-aux-nn"
     ):
-        cls: Any = OutcomeMLP
         model = OutcomeMLP(
             exposure_network=exposure_network,
             input_size=1 + n_covars,
@@ -452,7 +519,6 @@ def train_outcome_model(
 
     elif conformal_score == "quantile-reg":
         assert conformal_alpha_level is not None
-        cls = OutcomeQuantileRegMLP
         model = OutcomeQuantileRegMLP(
             exposure_network=exposure_network,
             input_size=1 + n_covars,
@@ -465,10 +531,17 @@ def train_outcome_model(
         )
 
     elif conformal_score == "gaussian-nn":
-        # TODO
-        raise ValueError("TODO")
+        model = OutcomeGaussianNet(
+            exposure_network=exposure_network,
+            input_size=1 + n_covars,
+            hidden=hidden,
+            lr=learning_rate,
+            weight_decay=weight_decay,
+            add_input_layer_batchnorm=add_input_batchnorm,
+            add_hidden_layer_batchnorm=False,
+        )
 
-    return cls, train_model(
+    return type(model), train_model(
         train_dataset,
         val_dataset,
         model=model,
@@ -639,7 +712,6 @@ def fit_quantile_iv(
     return estimator
 
 
-# TODO Change to get_conformal_qhat -> float
 def fit_conformal(
     outcome_model: OutcomeMLPBase,
     conformal_score: NONCONFORMITY_MEASURES_TYPE,
@@ -652,24 +724,27 @@ def fit_conformal(
         # band.
         conf_scores = nonconformity_sqr(outcome_model, conformal_dataset)
         q_hat = estimate_q_hat(conf_scores, alpha=alpha)
-        info(f"Conformal adjustment estimated at q_hat={q_hat}.")
-
-        meta["q_hat"] = q_hat
 
     elif conformal_score == "quantile-reg":
         conf_scores = nonconformity_quantile_reg(
             outcome_model, conformal_dataset
         )
         q_hat = estimate_q_hat(conf_scores, alpha=alpha)
-        info(f"Conformal adjustment estimated at q_hat={q_hat}.")
 
-        meta["q_hat"] = q_hat
+    elif conformal_score == "gaussian-nn":
+        conf_scores = nonconformity_gaussian_nn(
+            outcome_model, conformal_dataset
+        )
+        q_hat = estimate_q_hat(conf_scores, alpha=alpha)
 
     elif conformal_score in NONCONFORMITY_MEASURES:
         raise NotImplementedError()
 
     else:
         raise ValueError(conformal_score)
+
+    info(f"Conformal adjustment estimated at q_hat={q_hat}.")
+    meta["q_hat"] = q_hat
 
 
 @torch.no_grad()

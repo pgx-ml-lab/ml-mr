@@ -123,7 +123,7 @@ class Simulation:
         return self._sim_variables[name]
 
     def get_variable_data(self, name):
-        return self._data[name]
+        return self._data[name].values
 
     def resample(self):
         for name, variable in self._sim_parameters.items():

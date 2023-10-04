@@ -85,6 +85,18 @@ def nonconformity_sqr(
     return torch.maximum(y - y_hat_u, y_hat_l - y)
 
 
+@torch.no_grad()
+def nonconformity_gaussian_nn(
+    model: pl.LightningModule,
+    dataset: IVDataset,
+) -> torch.Tensor:
+    dl = FullBatchDataLoader(dataset)
+    _, y, ivs, covars = next(iter(dl))
+
+    mu, sigma2 = model.forward(ivs, covars)
+    return torch.abs(y - mu) / torch.sqrt(sigma2)
+
+
 class OutcomeResidualPrediction(MLP):
     def __init__(
         self,

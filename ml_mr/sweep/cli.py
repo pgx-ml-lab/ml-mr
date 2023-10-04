@@ -278,7 +278,11 @@ def parse_config(filename: str) -> SweepConfig:
 
 
 def create_sweep_database(sweep_config: SweepConfig) -> str:
-    filename = "ml_mr_sweep_runs.db"
+    filename = os.path.abspath(os.path.join(
+        sweep_config.sweep_directory,
+        "ml_mr_sweep_runs.db"
+    ))
+
     con = sqlite3.connect(filename)
     cur = con.cursor()
 
@@ -402,7 +406,7 @@ def create_sweep_database(sweep_config: SweepConfig) -> str:
     con.commit()
     con.close()
 
-    return "ml_mr_sweep_runs.db"
+    return filename
 
 
 def _fetchone_as_dict(cur: sqlite3.Cursor) -> dict:

@@ -128,17 +128,17 @@ def main():
         domain_lower = None
         domain_upper = None
 
+    ax = None
     if args.plot:
         # Setup figure.
         import matplotlib.pyplot as plt
-        plt.figure(figsize=(8, 6))
+        _, ax = plt.subplots(1, 1, figsize=(8, 6))
 
     # Header
     header = ["filename", "mse", "pred_interval_width"]
     header.extend(args.meta_keys)
     writer.writerow(header)
 
-    ax = None
     n_plotted = 0
     for input in args.input:
         # Try to detect model type.
@@ -230,8 +230,8 @@ def main():
 
     if args.plot:
         # Finalize and show figure.
-        ax.set_xticks(fontsize=16)
-        ax.set_yticks(fontsize=16)
+        ax.tick_params(axis="x", labelsize=16)
+        ax.tick_params(axis="y", labelsize=16)
         plt.legend(prop={"size": 14})
         plt.tight_layout()
 
