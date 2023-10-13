@@ -54,7 +54,7 @@ class Simulation:
 
         # Variables can be stochastic or fixed. Their realization are stored
         # in _data.
-        self._sim_variables: Dict[str, Variable] = {}
+        self._sim_variables: Dict[str, Variable] = OrderedDict()
 
     @property
     def parameters(self):
@@ -64,6 +64,9 @@ class Simulation:
 
             def __setitem__(self2, name: str, value: Any) -> None:
                 self.add_sim_parameter(name, value)
+
+            def __repr__(self2):
+                return self._sim_parameters.__repr__()
 
         return _ParameterDict()
 
@@ -77,12 +80,25 @@ class Simulation:
 
     def add_variables(self, variables: Iterable["Variable"]):
         variables_li = list(variables)
+        cols = []
+        names = []
         for v in variables_li:
             self._check_var_name(v.name)
             self._sim_variables[v.name] = v
 
-        mat = np.hstack([v(self).reshape(-1, 1) for v in variables_li])
-        df = pd.DataFrame(mat, columns=[v.name for v in variables_li])
+            data = v(self)
+            if data.ndim == 1:
+                data = data.reshape(-1, 1)
+
+            cols.append(data)
+            if isinstance(v, MVVariable):
+                for j in range(v.ndim):
+                    names.append(f"{v.name}_{j}")
+            else:
+                names.append(v.name)
+
+        mat = np.hstack(cols)
+        df = pd.DataFrame(mat, columns=names)
         self._data = pd.concat((self._data, df), axis=1)
 
     def add_variable(self, *args):
@@ -98,7 +114,7 @@ class Simulation:
             variable = args[0]
             self._check_var_name(variable.name)
             self._sim_variables[variable.name] = variable
-            self._data[variable.name] = variable(self)
+            self.sample_variable_data(variable.name)
 
         elif len(args) == 2:
             name, data = args
@@ -108,6 +124,10 @@ class Simulation:
     def add_sim_parameter(self, *args):
         if len(args) == 1:
             variable = args[0]
+            if isinstance(variable, MVVariable):
+                raise ValueError(
+                    "MVVariable parameters are not yet implemented."
+                )
             self._sim_parameters[variable.name] = variable
             self._sim_parameters_values[variable.name] = variable(self)
 
@@ -123,15 +143,32 @@ class Simulation:
         return self._sim_variables[name]
 
     def get_variable_data(self, name):
+        variable = self.get_variable(name)
+        if isinstance(variable, MVVariable):
+            cols = [f"{name}_{i}" for i in range(variable.ndim)]
+            return self._data[cols].values
+
         return self._data[name].values
+
+    def sample_variable_data(self, variable_name):
+        variable = self.get_variable(variable_name)
+        cur_data = variable(self)
+        if isinstance(variable, MVVariable):
+            add_df = pd.DataFrame(
+                cur_data,
+                columns=[f"{variable.name}_{j}" for j in range(variable.ndim)],
+            )
+            self._data = pd.concat([self._data, add_df], axis=1)
+        else:
+            self._data[variable.name] = cur_data
 
     def resample(self):
         for name, variable in self._sim_parameters.items():
             self._sim_parameters_values[name] = variable(self)
 
         self._data = pd.DataFrame(index=range(self.n))
-        for name, variable in self._sim_variables.items():
-            self._data[name] = variable(self)
+        for name in self._sim_variables.keys():
+            self.sample_variable_data(name)
 
     def get_parameters_dict(self) -> Dict[str, Any]:
         return {
@@ -186,6 +223,16 @@ class Variable:
             raise ValueError(f"No bound data for variable '{self.name}'.")
 
 
+class MVVariable:
+    """Multidimensional variable."""
+    def __init__(self, name_prefix, ndim):
+        self.name = name_prefix
+        self.ndim = ndim
+
+    def __call__(self, sim: Simulation):
+        raise ValueError(f"No bound data for variable '{self.name}'.")
+
+
 class Variant(Variable):
     def __init__(self, name, frequency):
         super().__init__(name)
@@ -215,6 +262,50 @@ class Normal(Variable):
             size = self.size
 
         return np.random.normal(self.mu, self.sigma, size=size)
+
+
+class Beta(Variable):
+    def __init__(
+        self,
+        name: str,
+        a: float,
+        b: float,
+        size: Optional[int] = None
+    ):
+        super().__init__(name)
+        self.a = a
+        self.b = b
+        self.size = size
+
+    def __call__(self, sim: Simulation):
+        if self.size is None:
+            size = sim.n
+        else:
+            size = self.size
+
+        return np.random.beta(self.a, self.b, size=size)
+
+
+class MVNormal(MVVariable):
+    def __init__(
+        self,
+        name: str,
+        mean: np.ndarray,
+        cov: np.ndarray,
+        size: Optional[int] = None
+    ):
+        super().__init__(name, mean.shape[0])
+        self.mean = mean
+        self.cov = cov
+        self.size = size
+
+    def __call__(self, sim: Simulation):
+        if self.size is None:
+            size = sim.n
+        else:
+            size = self.size
+
+        return np.random.multivariate_normal(self.mean, self.cov, size=size)
 
 
 class Uniform(Variable):
