@@ -6,13 +6,14 @@ distribution.
 import argparse
 import json
 import os
-from typing import Iterable, List, Optional, Tuple, Any
+from typing import Iterable, List, Optional, Tuple, Any, Union
 
 import matplotlib.pyplot as plt
 import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, random_split
+import pytorch_lightning as pl
 
 from ..logging import info
 from ..utils import default_validate_args, parse_project_and_run_name
@@ -31,7 +32,7 @@ from .core import (IVDataset, IVDatasetWithGenotypes, MREstimator,
 # fmt: off
 DEFAULTS = {
     "n_quantiles": 5,
-    "conformal_score": "sqr",
+    "conformal_score": "gaussian-net",
     "conformal_alpha_level": 0.1,
     "exposure_hidden": [128, 64],
     "outcome_hidden": [64, 32],
@@ -41,6 +42,7 @@ DEFAULTS = {
     "outcome_batch_size": 10_000,
     "exposure_max_epochs": 1000,
     "outcome_max_epochs": 1000,
+    "nmqn_penalty_lambda": 1,
     "exposure_weight_decay": 1e-4,
     "outcome_weight_decay": 1e-4,
     "exposure_add_input_batchnorm": False,
@@ -104,10 +106,98 @@ class ExposureQuantileMLP(MLP):
         return loss
 
 
+class ExposureNMQN(MLP):
+    def __init__(
+        self,
+        n_quantiles: int,
+        input_size: int,
+        hidden: Iterable[int],
+        lr: float,
+        pen_lambda: float = 1,
+        weight_decay: float = 0,
+        add_input_layer_batchnorm: bool = False,
+        add_hidden_layer_batchnorm: bool = False,
+        activations: Iterable[nn.Module] = [nn.GELU()],
+    ):
+        """The model will predict q quantiles."""
+        assert n_quantiles >= 3
+        self.quantiles = torch.tensor([
+            (i + 1) / (n_quantiles + 1) for i in range(n_quantiles)]
+        )
+
+        loss = QuantileLossMulti(self.quantiles)
+        hidden = list(hidden)
+        assert len(hidden) >= 2
+
+        super().__init__(
+            input_size=input_size,
+            hidden=hidden[:-1],
+            out=hidden[-1],
+            add_input_layer_batchnorm=add_input_layer_batchnorm,
+            add_hidden_layer_batchnorm=add_hidden_layer_batchnorm,
+            activations=activations,
+            binary_output=True,
+            lr=lr,
+            weight_decay=weight_decay,
+            loss=loss,
+            _save_hyperparams=False
+        )
+
+        self.save_hyperparameters()
+        self.deltas = nn.Linear(hidden[-1] + 1, n_quantiles, bias=False)
+
+    def on_fit_start(self) -> None:
+        self.loss.quantiles = self.loss.quantiles.to(  # type: ignore
+            device=self.device
+        )
+        return super().on_fit_start()
+
+    def penalty(self):
+        return self.l1_penalty_vec(self.deltas.weight)
+
+    @staticmethod
+    def l1_penalty_vec(d):
+        M = torch.sum(torch.max(torch.tensor(0), -d[1:, 1:]), dim=0)
+        d0_clipped = torch.clip(d[0, 1:], min=M)
+        penalty = torch.mean(torch.abs(d[0, 1:] - d0_clipped))
+        return penalty
+
+    def forward(self, x):
+        mlp_out = super().forward(x)
+        mlp_out = torch.hstack((
+            torch.ones(mlp_out.size(0), 1, device=self.device),
+            mlp_out
+        ))
+
+        betas = torch.cumsum(self.deltas.weight, dim=1)
+
+        return mlp_out @ betas.T
+
+    def _step(self, batch, batch_index, log_prefix):
+        x, _, ivs, covars = batch
+
+        qhat = self.forward(
+            torch.hstack([tens for tens in (ivs, covars) if tens.numel() > 0])
+        )
+
+        qloss = self.loss(qhat, x)
+        pen = self.penalty()
+        loss = qloss + self.hparams.pen_lambda * pen
+
+        self.log(f"exposure_{log_prefix}_qloss", qloss)
+        self.log(f"exposure_{log_prefix}_pen", pen)
+        self.log(f"exposure_{log_prefix}_loss", loss)
+
+        return loss
+
+
+QIVExposureNetType = Union[ExposureNMQN, ExposureQuantileMLP]
+
+
 class OutcomeQuantileRegMLP(MLP):
     def __init__(
         self,
-        exposure_network: ExposureQuantileMLP,
+        exposure_network: QIVExposureNetType,
         input_size: int,
         hidden: Iterable[int],
         lr: float,
@@ -180,7 +270,7 @@ class OutcomeQuantileRegMLP(MLP):
 class OutcomeMLP(OutcomeMLPBase):
     def __init__(
         self,
-        exposure_network: ExposureQuantileMLP,
+        exposure_network: QIVExposureNetType,
         input_size: int,
         hidden: Iterable[int],
         lr: float,
@@ -226,7 +316,7 @@ class OutcomeMLP(OutcomeMLPBase):
 class OutcomeGaussianNet(GaussianNet):
     def __init__(
         self,
-        exposure_network: ExposureQuantileMLP,
+        exposure_network: QIVExposureNetType,
         input_size: int,
         hidden: Iterable[int],
         lr: float,
@@ -268,7 +358,7 @@ class OutcomeGaussianNet(GaussianNet):
 
         # forward parameters is the default forward pass for gaussian net.
         # Won't go through the exposure network.
-        return self.forward_parameters(x)
+        return self.forward_parameters(x)  # type: ignore
 
     def forward(  # type: ignore
         self, ivs: torch.Tensor, covars: Optional[torch.Tensor]
@@ -282,8 +372,12 @@ class OutcomeGaussianNet(GaussianNet):
 def _qiv_zc_to_x_hat(
     ivs: torch.Tensor,
     covars: Optional[torch.Tensor],
-    exposure_network: ExposureQuantileMLP
+    exposure_network: QIVExposureNetType
 ) -> torch.Tensor:
+    """Utility function that gets predicted expected exposure given the IV and
+    covariates.
+
+    """
     exposure_net_xs = torch.hstack(
         [tens for tens in (ivs, covars) if tens is not None]
     )
@@ -301,7 +395,7 @@ def _qiv_zc_to_x_hat(
 class QuantileIVEstimator(MREstimator):
     def __init__(
         self,
-        exposure_network: ExposureQuantileMLP,
+        exposure_network: QIVExposureNetType,
         outcome_network: OutcomeMLP,
     ):
         self.exposure_network = exposure_network
@@ -318,9 +412,14 @@ class QuantileIVEstimator(MREstimator):
         with open(os.path.join(dir_name, "meta.json"), "rt") as f:
             meta = json.load(f)
 
-        exposure_network = ExposureQuantileMLP.load_from_checkpoint(
-            os.path.join(dir_name, "exposure_network.ckpt")
+        exposure_net_cls: type[pl.LightningModule] = (
+            ExposureNMQN if meta.get("nmqn", False)
+            else ExposureQuantileMLP
         )
+
+        exposure_network = exposure_net_cls.load_from_checkpoint(
+            os.path.join(dir_name, "exposure_network.ckpt")
+        ).to(torch.device("cpu"))
 
         # Get the right class for the outcome model.
         if meta["conformal_score"] == "quantile-reg":
@@ -335,7 +434,7 @@ class QuantileIVEstimator(MREstimator):
         outcome_network = outcome_cls.load_from_checkpoint(
             os.path.join(dir_name, "outcome_network.ckpt"),
             exposure_network=exposure_network
-        )
+        ).to(torch.device("cpu"))
 
         outcome_network.eval()  # type: ignore
 
@@ -355,7 +454,7 @@ class QuantileIVEstimatorWithUncertainty(
 ):
     def __init__(
         self,
-        exposure_network: ExposureQuantileMLP,
+        exposure_network: QIVExposureNetType,
         outcome_network: OutcomeMLP,
         meta: dict
     ):
@@ -377,7 +476,7 @@ class QuantileIVEstimatorWithUncertainty(
     ) -> torch.Tensor:
         if alpha != self.meta["conformal_alpha_level"]:
             raise ValueError("Conformal prediction tuned for alpha = {}"
-                                "".format(self.meta["conformal_alpha_level"]))
+                             "".format(self.meta["conformal_alpha_level"]))
 
         if self.conformal_score == "sqr":
             alpha = self.meta["conformal_alpha_level"]
@@ -435,6 +534,7 @@ def main(args: argparse.Namespace) -> None:
         dataset=dataset,
         fast=args.fast,
         wandb_project=args.wandb_project,
+        nmqn=args.nmqn,
         **kwargs,
     )
 
@@ -452,20 +552,29 @@ def train_exposure_model(
     add_input_batchnorm: bool,
     max_epochs: int,
     accelerator: Optional[str] = None,
-    wandb_project: Optional[str] = None
-) -> float:
+    wandb_project: Optional[str] = None,
+    nmqn_penalty_lambda: Optional[float] = None
+) -> Tuple[type[QIVExposureNetType], float]:
     info("Training exposure model.")
-    model = ExposureQuantileMLP(
-        n_quantiles=n_quantiles,
-        input_size=input_size,
-        hidden=hidden,
-        lr=learning_rate,
-        weight_decay=weight_decay,
-        add_input_layer_batchnorm=add_input_batchnorm,
-        add_hidden_layer_batchnorm=True,
-    )
+    kwargs = {
+        "n_quantiles": n_quantiles,
+        "input_size": input_size,
+        "hidden": hidden,
+        "lr": learning_rate,
+        "weight_decay": weight_decay,
+        "add_input_layer_batchnorm": add_input_batchnorm,
+        "add_hidden_layer_batchnorm": True,
+    }
 
-    return train_model(
+    if nmqn_penalty_lambda is None:
+        model = ExposureQuantileMLP(**kwargs)  # type: ignore
+    else:
+        model = ExposureNMQN(
+            **kwargs,  # type: ignore
+            pen_lambda=nmqn_penalty_lambda
+        )
+
+    return type(model), train_model(
         train_dataset,
         val_dataset,
         model=model,
@@ -482,7 +591,7 @@ def train_exposure_model(
 def train_outcome_model(
     train_dataset: Dataset,
     val_dataset: Dataset,
-    exposure_network: ExposureQuantileMLP,
+    exposure_network: QIVExposureNetType,
     output_dir: str,
     hidden: List[int],
     learning_rate: float,
@@ -561,6 +670,8 @@ def fit_quantile_iv(
     output_dir: str = DEFAULTS["output_dir"],  # type: ignore
     validation_proportion: float = DEFAULTS["validation_proportion"],  # type: ignore # noqa: E501
     fast: bool = False,
+    nmqn: bool = False,
+    nmqn_penalty_lambda: Optional[float] = DEFAULTS["nmqn_penalty_lambda"],  # type: ignore # noqa: E501
     conformal_score: Optional[NONCONFORMITY_MEASURES_TYPE] = DEFAULTS["conformal_score"],  # type: ignore # noqa: E501
     conformal_alpha_level: Optional[float] = DEFAULTS["conformal_alpha_level"],  # type: ignore # noqa: E501
     exposure_hidden: List[int] = DEFAULTS["exposure_hidden"],  # type: ignore
@@ -606,7 +717,7 @@ def fit_quantile_iv(
             train_dataset, val_dataset
         )
 
-    exposure_val_loss = train_exposure_model(
+    exposure_class, exposure_val_loss = train_exposure_model(
         n_quantiles=n_quantiles,
         train_dataset=train_dataset,
         val_dataset=val_dataset,
@@ -619,14 +730,15 @@ def fit_quantile_iv(
         add_input_batchnorm=exposure_add_input_batchnorm,
         max_epochs=exposure_max_epochs,
         accelerator=accelerator,
-        wandb_project=wandb_project
+        wandb_project=wandb_project,
+        nmqn_penalty_lambda=nmqn_penalty_lambda if nmqn else None
     )
 
     meta["exposure_val_loss"] = exposure_val_loss
 
-    exposure_network = ExposureQuantileMLP.load_from_checkpoint(
-        os.path.join(output_dir, "exposure_network.ckpt")
-    ).eval()  # type: ignore
+    exposure_network = exposure_class.load_from_checkpoint(
+        os.path.join(output_dir, "exposure_network.ckpt"),
+    ).to(torch.device("cpu")).eval()  # type: ignore
 
     exposure_network.freeze()
 
@@ -661,7 +773,7 @@ def fit_quantile_iv(
     outcome_network = outcome_class.load_from_checkpoint(
         os.path.join(output_dir, "outcome_network.ckpt"),
         exposure_network=exposure_network,
-    ).eval()  # type: ignore
+    ).eval().to(torch.device("cpu"))  # type: ignore
 
     # Training the 2nd stage model copies the exposure net to the GPU.
     # Here, we ensure they're on the same device.
@@ -748,7 +860,7 @@ def fit_conformal(
 
 @torch.no_grad()
 def plot_exposure_model(
-    exposure_network: ExposureQuantileMLP,
+    exposure_network: QIVExposureNetType,
     val_dataset: Dataset,
     output_filename: str
 ):
@@ -886,6 +998,17 @@ def configure_argparse(parser) -> None:
         default="continuous",
         choices=["continuous", "binary"],
         help="Variable type for the outcome (binary vs continuous).",
+    )
+
+    parser.add_argument(
+        "--nmqn",
+        action="store_true"
+    )
+
+    parser.add_argument(
+        "--nmqn-penalty-lambda",
+        type=float,
+        default=DEFAULTS["nmqn_penalty_lambda"]
     )
 
     parser.add_argument(

@@ -100,6 +100,7 @@ class MLP(pl.LightningModule):
         add_input_layer_batchnorm: bool = False,
         add_hidden_layer_batchnorm: bool = False,
         activations: Iterable[nn.Module] = [nn.LeakyReLU()],
+        binary_output: bool = False,
 
         # Hyperparameters and training parameters.
         lr: float = 1e-3,
@@ -113,6 +114,9 @@ class MLP(pl.LightningModule):
 
         layers = build_mlp(input_size, hidden, out, add_input_layer_batchnorm,
                            add_hidden_layer_batchnorm, activations)
+
+        if binary_output:
+            layers.append(nn.Sigmoid())
 
         self.loss = loss
         self.mlp = nn.Sequential(*layers)
