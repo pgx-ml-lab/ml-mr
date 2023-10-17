@@ -142,6 +142,18 @@ class LiteralSampler(ListSampler):
         super().__init__([value])
 
 
+@sampler_mode("random_uniform_int")
+class RandomUniformInt(StochasticSampler):
+    def __init__(self, low, high):
+        super().__init__("integer")
+        self.buffer_gen = lambda: np.random.randint(low, high + 1, size=1024)
+
+    def __iter__(self):
+        while True:
+            for element in self.buffer_gen():
+                yield element.item()
+
+
 @sampler_mode("random_uniform")
 class RandomUniform(StochasticSampler):
     def __init__(self, low, high, log=False):
@@ -151,11 +163,11 @@ class RandomUniform(StochasticSampler):
 
         if log:
             self.buffer_gen = lambda: np.random.uniform(
-                np.log(low), np.log(high), size=2
+                np.log(low), np.log(high), size=1024
             )
         else:
             self.buffer_gen = lambda: np.random.uniform(
-                low, high, size=2
+                low, high, size=1024
             )
 
     def __iter__(self):
