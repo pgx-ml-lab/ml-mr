@@ -178,20 +178,22 @@ class DeepIVEstimator(MREstimatorWithUncertainty):
         with open(os.path.join(dir_name, "meta.json"), "rt") as f:
             meta = json.load(f)
 
+        cpu = torch.device("cpu")
+
         exposure_network = _load_exposure_model_from_dir(
             dir_name, meta["exposure_network_type"]
-        )
+        ).to(cpu)
 
         outcome_network = OutcomeMLP.load_from_checkpoint(
             os.path.join(dir_name, "outcome_network.ckpt"),
             exposure_network=exposure_network
-        )
+        ).to(cpu)
 
         outcome_network_calibrated = OutcomeResidualPrediction\
             .load_from_checkpoint(
                 os.path.join(dir_name, "outcome_network_calibration.ckpt"),
                 wrapped_model=outcome_network
-            )
+            ).to(cpu)
 
         # Set the q_hat
         with open(os.path.join(dir_name, "meta.json")) as f:
@@ -201,18 +203,11 @@ class DeepIVEstimator(MREstimatorWithUncertainty):
 
         return cls(exposure_network, outcome_network_calibrated)
 
-    def effect(self, x: torch.Tensor, covars: Optional[torch.Tensor] = None):
-        return self.effect_with_prediction_interval(
-            x,
-            covars,
-            alpha=self.alpha
-        )[:, 1]
-
-    def effect_with_prediction_interval(
+    def iv_reg_function(
         self,
         x: torch.Tensor,
         covars: Optional[torch.Tensor] = None,
-        alpha: float = 0.05
+        alpha: float = 0.1
     ) -> torch.Tensor:
         """Mean exposure to outcome effect at values of x."""
         if alpha != self.alpha:
@@ -223,8 +218,8 @@ class DeepIVEstimator(MREstimatorWithUncertainty):
         if x.ndim == 1:
             x = x.reshape(-1, 1)
 
-        return self.average_treatment_effect(
-            x, covars, self.outcome_network.x_to_y
+        return self.outcome_network.x_to_y(x, covars).reshape(
+            x.size(0), 1, -1
         )
 
 
@@ -503,7 +498,7 @@ def fit_deep_iv(
         OutcomeResidualPrediction.load_from_checkpoint(
             os.path.join(output_dir, "outcome_network_calibration.ckpt"),
             wrapped_model=outcome_network
-        )
+        ).to(torch.device("cpu"))
     )
 
     outcome_network_calib.set_q_hat_from_data(val_dataset)
@@ -542,14 +537,14 @@ def save_estimator_statistics(
 ):
     # Save the causal effect at over the domain.
     xs = torch.linspace(domain[0], domain[1], 200)
-    preds = estimator.effect_with_prediction_interval(
+    preds = estimator.iv_reg_function(
         xs, covars, alpha=estimator.alpha
     )
     df = pd.DataFrame({
         "x": xs,
-        "y_do_x_lower": preds[:, 0],
-        "y_do_x": preds[:, 1],
-        "y_do_x_upper": preds[:, 2],
+        "y_do_x_lower": preds[:, 0, 0],
+        "y_do_x": preds[:, 0, 1],
+        "y_do_x_upper": preds[:, 0, 2],
     })
 
     plt.figure()
@@ -604,13 +599,6 @@ def configure_argparse(parser) -> None:
         help="Miscoverage level for the prediction interval.",
         type=float,
         default=DEFAULTS["alpha"]
-    )
-
-    parser.add_argument(
-        "--outcome-type",
-        default="continuous",
-        choices=["continuous", "binary"],
-        help="Variable type for the outcome (binary vs continuous).",
     )
 
     parser.add_argument(
