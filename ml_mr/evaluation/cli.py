@@ -213,7 +213,7 @@ def main():
             row.append(coverage)
 
         else:
-            row.append("", "")  # No prediction interval width and coverage
+            row.extend(["", ""])  # No prediction interval width and coverage
 
         row.extend(meta_values)
         writer.writerow(row)

@@ -3,8 +3,17 @@ import sys
 import argparse
 from typing import Tuple, Optional
 
+import torch
+
 from .temperature_scaling.temperature_scaling import temperature_scale
 from ..logging import critical
+
+
+def _cat(*tensors) -> torch.Tensor:
+    """Simple column concatenation of tensors with null checking."""
+    return torch.hstack(
+        [tens for tens in tensors if tens is not None and tens.numel() > 0]
+    )
 
 
 def parse_project_and_run_name(s: str) -> Tuple[str, Optional[str]]:

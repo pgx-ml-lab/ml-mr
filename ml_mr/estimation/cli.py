@@ -23,6 +23,11 @@ from .dfiv import (
     main as dfiv_main
 )
 
+from .delivr import (
+    configure_argparse as delivr_configure_argparse,
+    main as delivr_main
+)
+
 
 def main():
     """Entry point for the estimation module.
@@ -47,6 +52,9 @@ def main():
     dfiv_parser = algorithms.add_parser("dfiv")
     dfiv_configure_argparse(dfiv_parser)
 
+    delivr_parser = algorithms.add_parser("delivr")
+    delivr_configure_argparse(delivr_parser)
+
     args = parser.parse_args(sys.argv[2:])
     if args.algorithm == "quantile_iv":
         quantile_iv_main(args)
@@ -54,5 +62,7 @@ def main():
         deep_iv_main(args)
     elif args.algorithm == "dfiv":
         dfiv_main(args)
+    elif args.algorithm == "delivr":
+        delivr_main(args)
     else:
         raise ValueError("Invalid algorithm.")

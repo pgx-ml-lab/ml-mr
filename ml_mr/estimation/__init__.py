@@ -4,6 +4,7 @@ from . import deep_iv
 from . import quantile_iv
 from . import baselines
 from . import dfiv
+from . import delivr
 
 MODELS = {
     "quantile_iv": {
@@ -21,5 +22,9 @@ MODELS = {
     "dfiv": {
         "estimate": dfiv.estimate,
         "load": dfiv.load
+    },
+    "delivr": {
+        "estimate": delivr.estimate,
+        "load": delivr.load
     },
 }
