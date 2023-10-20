@@ -32,7 +32,7 @@ from .core import (IVDataset, IVDatasetWithGenotypes, MREstimator,
 # fmt: off
 DEFAULTS = {
     "n_quantiles": 5,
-    "conformal_score": "gaussian-net",
+    "conformal_score": "gaussian-nn",
     "conformal_alpha_level": 0.1,
     "exposure_hidden": [128, 64],
     "outcome_hidden": [64, 32],
@@ -648,6 +648,9 @@ def train_outcome_model(
             add_input_layer_batchnorm=add_input_batchnorm,
             add_hidden_layer_batchnorm=False,
         )
+
+    else:
+        raise ValueError(conformal_score)
 
     return type(model), train_model(
         train_dataset,
