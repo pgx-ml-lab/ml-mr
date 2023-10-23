@@ -40,6 +40,11 @@ def parse_args(argv):
     )
 
     parser.add_argument(
+        "--no-header",
+        action="store_true"
+    )
+
+    parser.add_argument(
         "--true-function",
         required=True,
         type=str,
@@ -139,12 +144,16 @@ def main():
         _, ax = plt.subplots(1, 1, figsize=(8, 6))
 
     # Header
-    header = ["filename", "mse", "mean_pred_interval_width", "mean_coverage"]
-    header.extend(args.meta_keys)
-    writer.writerow(header)
+    if not args.no_header:
+        header = [
+            "filename", "mse", "mean_pred_interval_width", "mean_coverage"
+        ]
+        header.extend(args.meta_keys)
+        writer.writerow(header)
 
     n_plotted = 0
     n_input = len(args.input)
+    legend_lines = []
     for input in args.input:
         # Try to detect model type.
         meta_filename = os.path.join(input, "meta.json")
@@ -228,24 +237,26 @@ def main():
             elif n_plotted > max_plots:
                 pass
             else:
-                ax = plot_iv_reg(
+                plot_data = plot_iv_reg(
                     estimator,
                     true_function,
                     domain=(domain_lower, domain_upper),
                     covars=covars,
-                    label=input,
+                    label=input.lstrip("_"),  # Otherwise ignored by MPL
                     plot_structural=True if n_plotted == 0 else False,
                     alpha=args.alpha,
                     ax=ax,
                     multi_run=n_input > 1
                 )
+                ax = plot_data["ax"]
+                legend_lines.append(plot_data["lines"])
                 n_plotted += 1
 
     if args.plot:
         # Finalize and show figure.
         ax.tick_params(axis="x", labelsize=16)
         ax.tick_params(axis="y", labelsize=16)
-        plt.legend(prop={"size": 14})
+        ax.legend(handles=legend_lines, prop={"size": 14})
         plt.tight_layout()
 
         if args.plot_filename is None:

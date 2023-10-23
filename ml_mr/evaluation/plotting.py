@@ -23,7 +23,7 @@ def plot_iv_reg(
     alpha: float = 0.1,
     ax: Optional["matplotlib.axes.Axes"] = None,
     multi_run: bool = False
-) -> "matplotlib.axes.Axes":
+) -> dict:
 
     if not MPL_AVAIL:
         raise ImportError(
@@ -60,7 +60,7 @@ def plot_iv_reg(
             zorder=2
         )
 
-    ax.plot(
+    lines, = ax.plot(
         xs.numpy().flatten(),
         y_hat.numpy().reshape(-1),
         label=label
@@ -82,4 +82,4 @@ def plot_iv_reg(
             alpha=color_alpha
         )
 
-    return ax
+    return {"ax": ax, "lines": lines}
