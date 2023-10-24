@@ -1,5 +1,6 @@
 import argparse
 import itertools
+import collections
 import os
 from typing import (Callable, Iterable, List, Literal, Optional, Tuple,
                     TypeVar, Union, Dict, Any)
@@ -208,6 +209,37 @@ class IVDataset(Dataset):
 
     def __len__(self) -> int:
         return self.ivs.size(0)
+
+    def to_dataframe(self) -> Tuple[pd.DataFrame, dict]:
+        cols = collections.OrderedDict()
+        stack = []
+
+        contents = [
+            (self.exposure, "exposure"),
+            (self.outcome, "outcome"),
+            (self.ivs, "ivs"),
+            (self.covariables, "covariables")
+        ]
+
+        def add(variable, name):
+            mat = variable.numpy()
+            assert mat.ndim == 2
+            stack.append(mat)
+            cols[name] = []
+            for j in range(mat.shape[1]):
+                cols[name].append(
+                    name + (f"_{j+1}" if mat.shape[1] > 1 else "")
+                )
+
+        for variable, name in contents:
+            add(variable, name)
+
+        df = pd.DataFrame(
+            np.hstack(stack),
+            columns=itertools.chain(*cols.values())
+        )
+
+        return df, cols
 
     def exposure_descriptive_statistics(self) -> Dict[str, Any]:
         x = self.exposure.numpy()

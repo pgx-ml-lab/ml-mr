@@ -34,18 +34,19 @@ estimator = fit_doubly_ranked(dataset)
 
 """
 
-from typing import Tuple, Optional, Iterable
+from typing import Optional
 import os
 
 import torch
 import pandas as pd
 import numpy as np
-from linearmodels.iv.model import IV2SLS
+
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 
 from ...logging import warn
 from ..core import IVDataset, MREstimator
+from .linear_two_stage import twosls
 
 
 class DoublyRankedEstimator(MREstimator):
@@ -57,7 +58,7 @@ class DoublyRankedEstimator(MREstimator):
             results["mean_x"], results["lace"]
         )
 
-    def effect(
+    def iv_reg_function(
         self,
         x: torch.Tensor,
         covars: Optional[torch.Tensor] = None
@@ -152,7 +153,7 @@ def fit_doubly_ranked(
     for mask in strata:
         cur = df.iloc[mask, :]
         mean_x = cur["x"].mean()
-        cur_beta, cur_se = iv_estimator(cur, "y", "x", ["z"], covar_cols)
+        cur_beta, cur_se = twosls(cur, "y", "x", ["z"], covar_cols)
         results.append((mean_x, cur_beta, cur_se))
 
     results_df = pd.DataFrame(results, columns=["mean_x", "lace", "lace_se"])
@@ -193,30 +194,6 @@ def fit_doubly_ranked(
 
     # Return an estimator instance.
     return DoublyRankedEstimator(results_df)
-
-
-def iv_estimator(
-    df: pd.DataFrame,
-    y_col: str,
-    x_col: str,
-    z_cols: Iterable[str],
-    covar_cols: Optional[Iterable[str]]
-) -> Tuple[float, float]:
-    df = df.copy()
-    df["const"] = 1
-
-    exog = ["const"]
-    if covar_cols is not None:
-        exog += list(covar_cols)
-
-    model = IV2SLS(
-        df[y_col],
-        df[exog],
-        df[x_col],
-        df[z_cols]
-    ).fit(cov_type="robust")
-
-    return model.params[x_col], model.std_errors[x_col]
 
 
 estimate = fit_doubly_ranked

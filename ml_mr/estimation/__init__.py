@@ -15,6 +15,10 @@ MODELS = {
         "estimate": baselines.doubly_ranked.estimate,
         "load": baselines.doubly_ranked.load,
     },
+    "2sls": {
+        "estimate": baselines.linear_two_stage.estimate,
+        "load": baselines.linear_two_stage.load,
+    },
     "deep_iv": {
         "estimate": deep_iv.estimate,
         "load": deep_iv.load
