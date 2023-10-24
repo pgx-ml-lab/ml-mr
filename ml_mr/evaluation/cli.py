@@ -55,6 +55,13 @@ def parse_args(argv):
     )
 
     parser.add_argument(
+        "--domain-95",
+        action="store_true",
+        help="Use the 2.5 and 97.5th percentiles of the training exposure "
+             "distribution as the domain."
+    )
+
+    parser.add_argument(
         "--domain",
         default=None,
         type=str,
@@ -102,7 +109,14 @@ def parse_args(argv):
         help="Alpha (miscoverage) level for prediction intervals and metrics."
     )
 
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+
+    if args.domain is not None and args.domain_95:
+        raise ValueError(
+            "Provide either an explicit domain or use --domain-95."
+        )
+
+    return args
 
 
 def main():
@@ -166,6 +180,9 @@ def main():
                f"'{input}'. Ignoring."
             )
             continue
+
+        if args.domain_95:
+            domain_lower, domain_upper = meta["exposure_95_percentile"]
 
         # Load covariables if needed.
         covar_filename = os.path.join(input, "covariables.pt")

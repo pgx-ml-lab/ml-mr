@@ -217,7 +217,8 @@ class IVDataset(Dataset):
 
         return {
             "domain": [min, max],
-            "exposure_95_percentile": np.percentile(x, [2.5, 97.5]).tolist()
+            "exposure_95_percentile": np.percentile(x, [2.5, 97.5]).tolist(),
+            "exposure_99_percentile": np.percentile(x, [0.5, 99.5]).tolist()
         }
 
     def n_outcomes(self) -> int:
