@@ -397,9 +397,11 @@ class QuantileIVEstimator(MREstimator):
         self,
         exposure_network: QIVExposureNetType,
         outcome_network: OutcomeMLP,
+        covars: Optional[torch.Tensor] = None
     ):
         self.exposure_network = exposure_network
         self.outcome_network = outcome_network
+        super().__init__(covars)
 
     def iv_reg_function(
         self, x: torch.Tensor, covars: Optional[torch.Tensor] = None
@@ -411,6 +413,11 @@ class QuantileIVEstimator(MREstimator):
     def from_results(cls, dir_name: str) -> "QuantileIVEstimator":
         with open(os.path.join(dir_name, "meta.json"), "rt") as f:
             meta = json.load(f)
+
+        try:
+            covars = torch.load(os.path.join(dir_name, "covariables.pt"))
+        except FileNotFoundError:
+            covars = None
 
         exposure_net_cls: type[pl.LightningModule] = (
             ExposureNMQN if meta.get("nmqn", False)
@@ -442,7 +449,8 @@ class QuantileIVEstimator(MREstimator):
             return QuantileIVEstimatorWithUncertainty(
                 exposure_network,
                 outcome_network,
-                meta
+                meta,
+                covars
             )
 
         return cls(exposure_network, outcome_network)
@@ -456,10 +464,12 @@ class QuantileIVEstimatorWithUncertainty(
         self,
         exposure_network: QIVExposureNetType,
         outcome_network: OutcomeMLP,
-        meta: dict
+        meta: dict,
+        covars: Optional[torch.Tensor] = None,
     ):
         self.exposure_network = exposure_network
         self.outcome_network = outcome_network
+        self.covars = covars
 
         # Conformal prediction adjustment.
         self.conformal_score: NONCONFORMITY_MEASURES_TYPE =\
@@ -701,6 +711,7 @@ def fit_quantile_iv(
     meta["model"] = "quantile_iv"
     meta.update(dataset.exposure_descriptive_statistics())
     del meta["dataset"]  # We don't serialize the dataset.
+    del meta["stage2_dataset"]
 
     covars = dataset.save_covariables(output_dir)
 
@@ -787,16 +798,18 @@ def fit_quantile_iv(
         fit_conformal(
             outcome_network,
             conformal_score,
-            val_dataset,  # type: ignore
+            stg2_val_dataset,  # type: ignore
             meta,
             alpha=conformal_alpha_level
         )
 
         estimator: QuantileIVEstimator = QuantileIVEstimatorWithUncertainty(
-            exposure_network, outcome_network, meta
+            exposure_network, outcome_network, meta, covars
         )
     else:
-        estimator = QuantileIVEstimator(exposure_network, outcome_network)
+        estimator = QuantileIVEstimator(
+            exposure_network, outcome_network, covars
+        )
 
     # Save the metadata, estimator statistics and log artifact to WandB if
     # required.
@@ -806,10 +819,8 @@ def fit_quantile_iv(
     if not fast:
         save_estimator_statistics(
             estimator,
-            covars,
             domain=meta["domain"],
             output_prefix=os.path.join(output_dir, "causal_estimates"),
-            alpha=conformal_alpha_level
         )
 
     if wandb_project is not None:
@@ -914,17 +925,14 @@ def plot_exposure_model(
 
 def save_estimator_statistics(
     estimator: QuantileIVEstimator,
-    covars: Optional[torch.Tensor],
     domain: Tuple[float, float],
     output_prefix: str = "causal_estimates",
-    alpha: Optional[float] = None
 ):
     # Save the causal effect at over the domain.
     xs = torch.linspace(domain[0], domain[1], 500).reshape(-1, 1)
 
     if isinstance(estimator, QuantileIVEstimatorWithUncertainty):
-        assert alpha is not None
-        ys = estimator.iv_reg_function(xs, covars, alpha=alpha)
+        ys = estimator.avg_iv_reg_function(xs)
 
         if ys.size(1) != 1:
             raise NotImplementedError(
@@ -938,7 +946,7 @@ def save_estimator_statistics(
         )
 
     else:
-        ys = estimator.iv_reg_function(xs, covars).reshape(-1)
+        ys = estimator.avg_iv_reg_function(xs).reshape(-1)
         df = pd.DataFrame({"x": xs.reshape(-1), "y_do_x": ys})
 
     plt.figure()
@@ -946,14 +954,13 @@ def save_estimator_statistics(
 
     if "y_do_x_lower" in df.columns:
         # Add the CI on the plot.
-        assert alpha is not None
         plt.fill_between(
             df["x"],
             df["y_do_x_lower"],
             df["y_do_x_upper"],
             color="#dddddd",
             zorder=-1,
-            label=f"{int((1 - alpha) * 100)}% Prediction interval"
+            label="Prediction interval"
         )
 
     plt.xlabel("X")

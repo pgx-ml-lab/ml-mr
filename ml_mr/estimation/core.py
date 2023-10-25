@@ -65,6 +65,7 @@ class MREstimator(object):
         x: torch.Tensor,
         low_memory: bool = False,
     ) -> torch.Tensor:
+
         if self.covars is None:
             return self.iv_reg_function(x, None)
 
@@ -78,7 +79,8 @@ class MREstimator(object):
         y_hats = self.iv_reg_function(x_rep, covars)
 
         return torch.vstack([
-            tens.mean(dim=0) for tens in torch.split(y_hats, n_covars)
+            tens.mean(dim=0, keepdim=True)
+            for tens in torch.split(y_hats, n_covars)
         ])
 
     def _low_mem_avg_iv_reg_function(self, x: torch.Tensor) -> torch.Tensor:
@@ -89,7 +91,7 @@ class MREstimator(object):
             cur_cf = torch.mean(self.iv_reg_function(
                 cur_x.repeat(num_covars).reshape(num_covars, -1),
                 self.covars
-            ))
+            ), dim=0, keepdim=True)
             avgs.append(cur_cf)
 
         return torch.vstack(avgs)
@@ -488,16 +490,31 @@ class IVDatasetWithGenotypes(IVDataset):
         self.iv_idx_tens = torch.tensor(iv_indices)
         self.covariable_idx_tens = torch.tensor(covariable_indices)
 
+        if self.exposure_index is None:
+            warn(f"Exposure '{exposure_col}' not found in genetic dataset "
+                 f"(will not be accessible).")
+
+        if self.outcome_index is None:
+            warn(f"Outcome '{outcome_col}' not found in genetic dataset "
+                 f"(will not be accessible).")
+
     def __getitem__(self, index: int) -> IVDatasetBatch:
         cur = self.genetic_dataset[index]
-        exposure = cur.exogenous[:, [self.exposure_index]]
-        outcome = cur.exogenous[:, [self.outcome_index]]
+        if self.exposure_index is not None:
+            exposure = cur.exogenous[[self.exposure_index]]
+        else:
+            exposure = torch.Tensor()
+
+        if self.outcome_index is not None:
+            outcome = cur.exogenous[[self.outcome_index]]
+        else:
+            outcome = torch.Tensor()
 
         instruments = cur.dosage
         covars = torch.Tensor()
 
         if self.covariable_idx_tens.numel() > 0:
-            covars = cur.exogenous[:, self.covariable_idx_tens]
+            covars = cur.exogenous[self.covariable_idx_tens]
 
         if self.iv_idx_tens.numel() > 0:
             instruments = torch.hstack(
@@ -511,7 +528,9 @@ class IVDatasetWithGenotypes(IVDataset):
 
     @property
     def covariables(self):
-        self.genetic_dataset.exog[:, self.covariable_idx_tens]
+        covars = self.genetic_dataset.exog[:, self.covariable_idx_tens]\
+            .to(torch.float32)
+        return covars
 
     @property
     def exposure(self):

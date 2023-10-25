@@ -59,3 +59,33 @@ def test_avg_iv_reg_fct_lowmem(mr_estimator_identity_elem_product_covars):
     )
 
     assert torch.all(y_cv == expected)
+
+
+def test_avg_iv_reg_fct_unc(mr_estimator_covar_itx_with_unc):
+    xs = torch.arange(10).reshape(-1, 1).to(torch.float32)
+    covars = torch.arange(5).reshape(-1, 1).to(torch.float32) + 5  # 5 to 9
+    mr_estimator_covar_itx_with_unc.set_covars(covars)
+
+    expected = torch.tensor(
+        [[7.0 * x - 0.1, 7.0 * x, 7.0 * x + 0.1] for x in range(10)]
+    ).reshape(-1, 1, 3)
+
+    y_cv = mr_estimator_covar_itx_with_unc.avg_iv_reg_function(xs)
+
+    assert torch.all(y_cv == expected)
+
+
+def test_avg_iv_reg_fct_unc_lowmem(mr_estimator_covar_itx_with_unc):
+    xs = torch.arange(10).reshape(-1, 1).to(torch.float32)
+    covars = torch.arange(5).reshape(-1, 1).to(torch.float32) + 5  # 5 to 9
+    mr_estimator_covar_itx_with_unc.set_covars(covars)
+
+    expected = torch.tensor(
+        [[7.0 * x - 0.1, 7.0 * x, 7.0 * x + 0.1] for x in range(10)]
+    ).reshape(-1, 1, 3)
+
+    y_cv = mr_estimator_covar_itx_with_unc.avg_iv_reg_function(
+        xs, low_memory=True
+    )
+
+    assert torch.all(y_cv == expected)

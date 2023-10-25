@@ -56,7 +56,6 @@ def fit_2sls(
         "exposure_beta": betas[cols["exposure"]].to_list(),
         "exposure_se": iv_results.std_errors[cols["exposure"]].to_list()
     }
-    print(estimates)
 
     with open(os.path.join(output_dir, "2sls_fit.json"), "wt") as f:
         json.dump(estimates, f)
