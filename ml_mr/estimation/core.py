@@ -191,6 +191,7 @@ class MREstimatorWithUncertainty(MREstimator):
 class EnsembleMREstimator(MREstimatorWithUncertainty):
     def __init__(self, *estimators: MREstimator):
         self.estimators = estimators
+        self.covars = estimators[0].covars
 
     def iv_reg_function(
         self,
