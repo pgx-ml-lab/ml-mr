@@ -24,7 +24,7 @@ from ..utils.conformal import (
 )
 from ..utils.models import MLP, GaussianNet, OutcomeMLPBase
 from ..utils.quantiles import QuantileLossMulti
-from ..utils.training import train_model
+from ..utils.training import train_model, resample_dataset
 from .core import (IVDataset, IVDatasetWithGenotypes, MREstimator,
                    MREstimatorWithUncertainty)
 
@@ -32,7 +32,7 @@ from .core import (IVDataset, IVDatasetWithGenotypes, MREstimator,
 # fmt: off
 DEFAULTS = {
     "n_quantiles": 5,
-    "conformal_score": "gaussian-nn",
+    "conformal_score": None,
     "conformal_alpha_level": 0.1,
     "exposure_hidden": [128, 64],
     "outcome_hidden": [64, 32],
@@ -275,6 +275,7 @@ class OutcomeMLP(OutcomeMLPBase):
         hidden: Iterable[int],
         lr: float,
         weight_decay: float = 0,
+        binary_outcome: bool = False,
         sqr: bool = False,
         quantile_regression_alpha: Optional[float] = None,
         add_input_layer_batchnorm: bool = False,
@@ -287,6 +288,7 @@ class OutcomeMLP(OutcomeMLPBase):
             hidden=hidden,
             lr=lr,
             weight_decay=weight_decay,
+            binary_outcome=binary_outcome,
             sqr=sqr,
             add_input_layer_batchnorm=add_input_layer_batchnorm,
             add_hidden_layer_batchnorm=add_hidden_layer_batchnorm,
@@ -429,14 +431,14 @@ class QuantileIVEstimator(MREstimator):
         ).to(torch.device("cpu"))
 
         # Get the right class for the outcome model.
-        if meta["conformal_score"] == "quantile-reg":
-            outcome_cls = OutcomeQuantileRegMLP
+        if meta.get("conformal_score") is None:
+            outcome_cls = OutcomeMLP
+        elif meta["conformal_score"] == "quantile-reg":
+            outcome_cls = OutcomeQuantileRegMLP  # type: ignore
         elif meta["conformal_score"] == "gaussian-nn":
             outcome_cls = OutcomeGaussianNet  # type: ignore
         elif meta["conformal_score"] not in NONCONFORMITY_MEASURES:
             raise ValueError(meta["conformal_score"])
-        else:
-            outcome_cls = OutcomeMLP  # type: ignore
 
         outcome_network = outcome_cls.load_from_checkpoint(
             os.path.join(dir_name, "outcome_network.ckpt"),
@@ -453,7 +455,7 @@ class QuantileIVEstimator(MREstimator):
                 covars
             )
 
-        return cls(exposure_network, outcome_network)
+        return cls(exposure_network, outcome_network, covars=covars)
 
 
 class QuantileIVEstimatorWithUncertainty(
@@ -545,6 +547,7 @@ def main(args: argparse.Namespace) -> None:
         fast=args.fast,
         wandb_project=args.wandb_project,
         nmqn=args.nmqn,
+        resample=args.resample,
         **kwargs,
     )
 
@@ -612,9 +615,14 @@ def train_outcome_model(
     conformal_score: Optional[NONCONFORMITY_MEASURES_TYPE],
     conformal_alpha_level: Optional[float],
     accelerator: Optional[str] = None,
+    binary_outcome: bool = False,
     wandb_project: Optional[str] = None
 ) -> Tuple[Any, float]:
     info("Training outcome model.")
+    if binary_outcome and conformal_score is not None:
+        raise NotImplementedError("Conformal prediction not implemented for "
+                                  "binary outcomes.")
+
     n_covars = train_dataset[0][3].numel()
     if (
         conformal_score is None or
@@ -628,6 +636,7 @@ def train_outcome_model(
             weight_decay=weight_decay,
             hidden=hidden,
             add_input_layer_batchnorm=add_input_batchnorm,
+            binary_outcome=binary_outcome,
             sqr=(conformal_score == "sqr"),
             quantile_regression_alpha=(
                 conformal_alpha_level if conformal_score == "quantile-reg"
@@ -662,6 +671,8 @@ def train_outcome_model(
     else:
         raise ValueError(conformal_score)
 
+    info(f"Loss: {model.loss}")
+
     return type(model), train_model(
         train_dataset,
         val_dataset,
@@ -683,6 +694,8 @@ def fit_quantile_iv(
     output_dir: str = DEFAULTS["output_dir"],  # type: ignore
     validation_proportion: float = DEFAULTS["validation_proportion"],  # type: ignore # noqa: E501
     fast: bool = False,
+    binary_outcome: bool = False,
+    resample: bool = False,
     nmqn: bool = False,
     nmqn_penalty_lambda: Optional[float] = DEFAULTS["nmqn_penalty_lambda"],  # type: ignore # noqa: E501
     conformal_score: Optional[NONCONFORMITY_MEASURES_TYPE] = DEFAULTS["conformal_score"],  # type: ignore # noqa: E501
@@ -702,6 +715,11 @@ def fit_quantile_iv(
     accelerator: str = DEFAULTS["accelerator"],  # type: ignore
     wandb_project: Optional[str] = None,
 ) -> QuantileIVEstimator:
+    if resample:
+        dataset = resample_dataset(dataset)  # type: ignore
+        if stage2_dataset is not None:
+            stage2_dataset = resample_dataset(stage2_dataset)  # type: ignore
+
     # Create output directory if needed.
     if not os.path.isdir(output_dir):
         os.makedirs(output_dir)
@@ -779,6 +797,7 @@ def fit_quantile_iv(
         accelerator=accelerator,
         conformal_score=conformal_score,
         conformal_alpha_level=conformal_alpha_level,
+        binary_outcome=binary_outcome,
         wandb_project=wandb_project
     )
 
@@ -1032,6 +1051,12 @@ def configure_argparse(parser) -> None:
         default=DEFAULTS["accelerator"],
         help="Accelerator (e.g. gpu, cpu, mps) use to train the model. This "
         "will be passed to Pytorch Lightning.",
+    )
+
+    parser.add_argument(
+        "--resample",
+        help="Resample with replacement to do bootstrapping.",
+        action="store_true"
     )
 
     parser.add_argument(

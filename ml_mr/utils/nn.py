@@ -100,7 +100,6 @@ class MLP(pl.LightningModule):
         add_input_layer_batchnorm: bool = False,
         add_hidden_layer_batchnorm: bool = False,
         activations: Iterable[nn.Module] = [nn.LeakyReLU()],
-        binary_output: bool = False,
 
         # Hyperparameters and training parameters.
         lr: float = 1e-3,
@@ -114,9 +113,6 @@ class MLP(pl.LightningModule):
 
         layers = build_mlp(input_size, hidden, out, add_input_layer_batchnorm,
                            add_hidden_layer_batchnorm, activations)
-
-        if binary_output:
-            layers.append(nn.Sigmoid())
 
         self.loss = loss
         self.mlp = nn.Sequential(*layers)
@@ -287,11 +283,19 @@ class OutcomeMLPBase(MLP):
         hidden: Iterable[int],
         lr: float,
         weight_decay: float = 0,
+        binary_outcome: bool = False,
         sqr: bool = False,
         add_input_layer_batchnorm: bool = False,
         add_hidden_layer_batchnorm: bool = False,
         activations: Iterable[nn.Module] = [nn.GELU()]
     ):
+        if sqr:
+            loss: Callable = quantile_loss
+        elif binary_outcome:
+            loss = F.binary_cross_entropy_with_logits
+        else:
+            loss = F.mse_loss
+
         super().__init__(
             input_size=input_size if not sqr else input_size + 1,
             hidden=hidden,
@@ -301,7 +305,7 @@ class OutcomeMLPBase(MLP):
             activations=activations,
             lr=lr,
             weight_decay=weight_decay,
-            loss=F.mse_loss if not sqr else quantile_loss,  # type: ignore
+            loss=loss,  # type: ignore
             _save_hyperparams=False,
         )
         self.exposure_network = exposure_network

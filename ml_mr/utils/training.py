@@ -17,6 +17,28 @@ from ..logging import info
 from . import parse_project_and_run_name
 
 
+def resample_dataset(dataset: Dataset) -> Dataset:
+    n = len(dataset)  # type: ignore
+    bootstrap_idx = torch.multinomial(
+        torch.ones(n), n, replacement=True
+    ).tolist()
+
+    class ResampledDataset(Dataset):
+        def __getattr__(self, k):
+            # Defer to dataset if unknown method, only change the behaviour of
+            # indexing.
+            return getattr(dataset, k)
+
+        def __len__(self):
+            return n
+
+        def __getitem__(self, idx):
+            bs_idx = bootstrap_idx[idx]
+            return dataset[bs_idx]
+
+    return ResampledDataset()
+
+
 def train_model(
     train_dataset: Dataset,
     val_dataset: Dataset,

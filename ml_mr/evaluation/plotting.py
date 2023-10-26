@@ -19,7 +19,7 @@ def plot_iv_reg(
     covars: Optional[torch.Tensor] = None,
     label: str = "Predicted Y",
     plot_structural: bool = True,
-    n_points: int = 5000,
+    n_points: int = 2000,
     alpha: float = 0.1,
     ax: Optional["matplotlib.axes.Axes"] = None,
     multi_run: bool = False
@@ -35,14 +35,14 @@ def plot_iv_reg(
     uncertainty = False
     if isinstance(estimator, MREstimatorWithUncertainty):
         uncertainty = True
-        y_hat_ci = estimator.iv_reg_function(
+        y_hat_ci = estimator.avg_iv_reg_function(
             xs, covars, alpha=alpha
         )
         y_hat_l = y_hat_ci[:, :, 0]
         y_hat = y_hat_ci[:, :, 1]
         y_hat_u = y_hat_ci[:, :, 2]
     else:
-        y_hat = estimator.iv_reg_function(xs, covars)
+        y_hat = estimator.avg_iv_reg_function(xs, covars)
 
     true_y = true_function(xs)
 

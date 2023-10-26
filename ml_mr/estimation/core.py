@@ -63,18 +63,22 @@ class MREstimator(object):
     def avg_iv_reg_function(
         self,
         x: torch.Tensor,
+        covars: Optional[torch.Tensor] = None,
         low_memory: bool = False,
     ) -> torch.Tensor:
 
-        if self.covars is None:
-            return self.iv_reg_function(x, None)
+        if covars is None:
+            if self.covars is None:
+                return self.iv_reg_function(x, None)
+            else:
+                covars = self.covars
 
         if low_memory:
             return self._low_mem_avg_iv_reg_function(x)
 
-        n_covars = self.covars.shape[0]
+        n_covars = covars.shape[0]
         x_rep = torch.repeat_interleave(x, n_covars, dim=0)
-        covars = self.covars.repeat(x.shape[0], 1)
+        covars = covars.repeat(x.shape[0], 1)
 
         y_hats = self.iv_reg_function(x_rep, covars)
 
@@ -114,8 +118,8 @@ class MREstimator(object):
         covars: torch.Tensor
     ) -> torch.Tensor:
         """Conditional average treatment effect."""
-        y1 = self.iv_reg_function(x1, covars)
-        y0 = self.iv_reg_function(x0, covars)
+        y1 = self.avg_iv_reg_function(x1, covars)
+        y0 = self.avg_iv_reg_function(x0, covars)
 
         return y1 - y0
 
@@ -175,6 +179,36 @@ class MREstimatorWithUncertainty(MREstimator):
     ) -> torch.Tensor:
         return super().iv_reg_function(x, covars)
 
+    def avg_iv_reg_function(
+        self,
+        x: torch.Tensor,
+        covars: Optional[torch.Tensor] = None,
+        alpha: float = 0.1,
+    ) -> torch.Tensor:
+        return super().avg_iv_reg_function(x, covars)
+
+
+class EnsembleMREstimator(MREstimatorWithUncertainty):
+    def __init__(self, *estimators: MREstimator):
+        self.estimators = estimators
+
+    def iv_reg_function(
+        self,
+        x: torch.Tensor,
+        covars: Optional[torch.Tensor] = None,
+        alpha: float = 0.1
+    ) -> torch.Tensor:
+        estimates = []
+        for estimator in self.estimators:
+            estimates.append(estimator.iv_reg_function(x, covars))
+
+        combined = torch.concat(estimates, dim=1)  # n x num_estimators
+        return torch.quantile(
+            combined,
+            torch.tensor([alpha / 2, 0.5, 1 - alpha / 2]),
+            dim=1
+        ).T.reshape(-1, 1, 3)
+
 
 class IVDataset(Dataset):
     """Dataset class for IV analysis.
@@ -194,16 +228,22 @@ class IVDataset(Dataset):
         self.ivs = ivs
         self.covariables = covariables
 
-        assert (
-            self.exposure.size(0) == self.outcome.size(0) == self.ivs.size(0)
-        ), (
-            f"exposure={self.exposure.shape}, outcome={self.outcome.shape},"
-            f"ivs={self.ivs.shape}"
-        )
+        n = self.ivs.size(0)
+        assert n != 0
+        for tens in (exposure, outcome, covariables):
+            assert tens.numel() == 0 or tens.size(0) == n
 
     def __getitem__(self, index: int) -> IVDatasetBatch:
-        exposure = self.exposure[index]
-        outcome = self.outcome[index]
+        if self.exposure.numel() > 0:
+            exposure = self.exposure[index]
+        else:
+            exposure = torch.Tensor()
+
+        if self.outcome.numel() > 0:
+            outcome = self.outcome[index]
+        else:
+            outcome = torch.Tensor()
+
         ivs = self.ivs[index]
         covars = self.covariables[index]
 
@@ -298,15 +338,15 @@ class IVDataset(Dataset):
     @staticmethod
     def from_dataframe(
         dataframe: pd.DataFrame,
-        exposure_col: str,
-        outcome_col: str,
+        exposure_col: Optional[str],
+        outcome_col: Optional[str],
         iv_cols: Iterable[str],
         covariable_cols: Iterable[str] = []
     ) -> "IVDataset":
         # We'll do complete case analysis if the user provides a df with NAs.
-        keep_cols = list(itertools.chain(
+        keep_cols = [col for col in itertools.chain(
             [exposure_col, outcome_col], iv_cols, covariable_cols
-        ))
+        ) if col is not None]
         dataframe = dataframe[keep_cols]
         if dataframe.isna().values.any():
             n_before = dataframe.shape[0]
@@ -314,12 +354,20 @@ class IVDataset(Dataset):
             n_after = dataframe.shape[0]
             n = n_before - n_after
             warn(
-                f"Doing complete case analysis. Dropped {n} rows with missing"
+                f"Doing complete case analysis. Dropped {n} rows with missing "
                 f"values from the input data."
             )
 
-        exposure = torch.from_numpy(dataframe[exposure_col].values).float()
-        outcome = torch.from_numpy(dataframe[outcome_col].values).float()
+        if exposure_col is not None:
+            exposure = torch.from_numpy(dataframe[exposure_col].values).float()
+        else:
+            exposure = torch.Tensor()
+
+        if outcome_col is not None:
+            outcome = torch.from_numpy(dataframe[outcome_col].values).float()
+        else:
+            outcome = torch.Tensor()
+
         ivs = torch.from_numpy(dataframe[iv_cols].values).float()
         covars = torch.from_numpy(dataframe[covariable_cols].values).float()
 
@@ -416,28 +464,6 @@ class IVDataset(Dataset):
             required=True,
             type=str,
         )
-
-
-class BootstrapIVDataset(IVDataset):
-    def __init__(
-        self,
-        exposure: torch.Tensor,
-        outcome: torch.Tensor,
-        ivs: torch.Tensor,
-        covariables: torch.Tensor = torch.Tensor()
-    ):
-        super().__init__(exposure, outcome, ivs, covariables)
-        # Resample with replacement.
-        n = len(self)
-        self.bootstrap_idx = torch.multinomial(
-            torch.ones(n),
-            n,
-            replacement=True
-        )
-
-    def __getitem__(self, idx: int) -> IVDatasetBatch:
-        bs_idx = int(self.bootstrap_idx[idx].item())
-        return super().__getitem__(bs_idx)
 
 
 class FullBatchDataLoader(DataLoader):

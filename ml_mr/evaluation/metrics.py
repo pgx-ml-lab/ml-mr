@@ -11,10 +11,10 @@ def mse(
     true_function: Callable[[torch.Tensor], torch.Tensor],
     domain: Tuple[float, float],
     covars: Optional[torch.Tensor] = None,
-    n_points: int = 5000
+    n_points: int = 2000
 ) -> float:
     xs = torch.linspace(domain[0], domain[1], n_points).reshape(-1, 1)
-    y_hat = estimator.iv_reg_function(xs, covars)
+    y_hat = estimator.avg_iv_reg_function(xs, covars=covars)
 
     if isinstance(estimator, MREstimatorWithUncertainty):
         y_hat = y_hat[:, :, 1]
@@ -29,11 +29,11 @@ def mean_coverage(
     true_function: Callable[[torch.Tensor], torch.Tensor],
     domain: Tuple[float, float],
     covars: Optional[torch.Tensor] = None,
-    n_points: int = 5000
+    n_points: int = 2000
 ) -> float:
     assert isinstance(estimator, MREstimatorWithUncertainty)
     xs = torch.linspace(domain[0], domain[1], n_points).reshape(-1, 1)
-    pred = estimator.iv_reg_function(xs, covars)
+    pred = estimator.avg_iv_reg_function(xs, covars)
 
     true_y = true_function(xs)
     coverage = torch.mean(
@@ -49,7 +49,7 @@ def mean_prediction_interval_absolute_width(
     domain: Tuple[float, float],
     covars: Optional[torch.Tensor] = None,
     alpha: float = 0.1,
-    n_points: int = 5000,
+    n_points: int = 2000,
 ) -> float:
     xs = torch.linspace(domain[0], domain[1], n_points).reshape(-1, 1)
 

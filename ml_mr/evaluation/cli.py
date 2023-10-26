@@ -183,22 +183,6 @@ def main():
         if args.domain_95:
             domain_lower, domain_upper = meta["exposure_95_percentile"]
 
-        # Load covariables if needed.
-        covar_filename = os.path.join(input, "covariables.pt")
-        if os.path.isfile(covar_filename):
-            covars = torch.load(covar_filename)
-
-            if args.sample_n_covars < covars.size(0):
-                indices = torch.multinomial(
-                    torch.ones(covars.size(0)),
-                    args.sample_n_covars,
-                    replacement=False
-                )
-                covars = covars[indices]
-                debug(f"Downsampling covars to {covars.size()}.")
-        else:
-            covars = None
-
         meta_values = []
         if args.meta_keys:
             meta_values = [
@@ -220,20 +204,18 @@ def main():
 
         cur_mse = mse(
             estimator, true_function, domain=(domain_lower, domain_upper),
-            covars=covars
         )
 
         row = [input, cur_mse]
         if isinstance(estimator, MREstimatorWithUncertainty):
             width = mean_prediction_interval_absolute_width(
                 estimator, (domain_lower, domain_upper),
-                covars=covars, alpha=args.alpha
+                alpha=args.alpha
             )
             row.append(width)
 
             coverage = mean_coverage(
                 estimator, true_function, (domain_lower, domain_upper),
-                covars=covars
             )
             row.append(coverage)
 
@@ -257,7 +239,6 @@ def main():
                     estimator,
                     true_function,
                     domain=(domain_lower, domain_upper),
-                    covars=covars,
                     label=input.lstrip("_"),  # Otherwise ignored by MPL
                     plot_structural=True if n_plotted == 0 else False,
                     alpha=args.alpha,
