@@ -21,7 +21,7 @@ from torch.utils.data import Dataset, random_split
 from ..utils import _cat, default_validate_args, parse_project_and_run_name
 from ..utils.linear import ridge_regression
 from ..utils.models import MLP
-from ..utils.training import train_model
+from ..utils.training import train_model, resample_dataset
 from .core import (FullBatchDataLoader, IVDataset, IVDatasetWithGenotypes,
                    MREstimator)
 
@@ -63,6 +63,8 @@ def main(args: argparse.Namespace) -> None:
 
 def fit_delivr(
     dataset: IVDataset,
+    stage2_dataset: Optional[IVDataset] = None,  # type: ignore
+    resample: bool = False,
     output_dir: str = DEFAULTS["output_dir"],  # type: ignore
     validation_proportion: float = DEFAULTS["validation_proportion"],  # type: ignore # noqa: E501
     hidden: List[int] = DEFAULTS["hidden"],  # type: ignore
@@ -73,6 +75,11 @@ def fit_delivr(
     accelerator: str = DEFAULTS["accelerator"],  # type: ignore
     wandb_project: Optional[str] = None
 ):
+    if resample:
+        dataset = resample_dataset(dataset)  # type: ignore
+        if stage2_dataset is not None:
+            stage2_dataset = resample_dataset(stage2_dataset)  # type: ignore
+
     # Create output directory if needed.
     if not os.path.isdir(output_dir):
         os.makedirs(output_dir)
@@ -82,18 +89,30 @@ def fit_delivr(
     meta["model"] = "delivr"
     meta.update(dataset.exposure_descriptive_statistics())
     del meta["dataset"]
+    del meta["stage2_dataset"]
+
+    dataset.save_covariables(output_dir)
 
     # Split here into train and val.
     train_dataset, val_dataset = random_split(
         dataset, [1 - validation_proportion, validation_proportion]
     )
 
+    if stage2_dataset is not None:
+        stg2_train_dataset, stg2_val_dataset = random_split(
+            stage2_dataset, [1 - validation_proportion, validation_proportion]
+        )
+    else:
+        stg2_train_dataset, stg2_val_dataset = (
+            train_dataset, val_dataset
+        )
+
     # Use linear first stage on whole training dataset.
     stg1_betas = fit_lin_exposure_model(train_dataset)
 
     outcome_val_loss = train_outcome_model(
-        train_dataset=train_dataset,
-        val_dataset=val_dataset,
+        train_dataset=stg2_train_dataset,
+        val_dataset=stg2_val_dataset,
         output_dir=output_dir,
         betas=stg1_betas,
         hidden=hidden,
