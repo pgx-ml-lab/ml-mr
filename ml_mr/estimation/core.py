@@ -193,6 +193,27 @@ class EnsembleMREstimator(MREstimatorWithUncertainty):
         self.estimators = estimators
         self.covars = estimators[0].covars
 
+    def ate(
+        self,
+        x0: torch.Tensor,
+        x1: torch.Tensor,
+        alpha: float = 0.1
+    ) -> torch.Tensor:
+        ates = []
+        for estimator in self.estimators:
+            mu0 = estimator.avg_iv_reg_function(x0)
+            mu1 = estimator.avg_iv_reg_function(x1)
+
+            ates.append(mu1 - mu0)
+
+        combined = torch.concat(ates, dim=1)
+
+        return torch.quantile(
+            combined,
+            torch.tensor([alpha / 2, 0.5, 1 - alpha / 2]),
+            dim=1
+        ).T.reshape(-1, 1, 3)
+
     def iv_reg_function(
         self,
         x: torch.Tensor,
