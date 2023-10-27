@@ -427,8 +427,9 @@ class QuantileIVEstimator(MREstimator):
         )
 
         exposure_network = exposure_net_cls.load_from_checkpoint(
-            os.path.join(dir_name, "exposure_network.ckpt")
-        ).to(torch.device("cpu"))
+            os.path.join(dir_name, "exposure_network.ckpt"),
+            map_location=torch.device("cpu")
+        )
 
         # Get the right class for the outcome model.
         if meta.get("conformal_score") is None:
@@ -442,8 +443,9 @@ class QuantileIVEstimator(MREstimator):
 
         outcome_network = outcome_cls.load_from_checkpoint(
             os.path.join(dir_name, "outcome_network.ckpt"),
-            exposure_network=exposure_network
-        ).to(torch.device("cpu"))
+            exposure_network=exposure_network,
+            map_location=torch.device("cpu")
+        )
 
         outcome_network.eval()  # type: ignore
 
