@@ -67,6 +67,7 @@ def fit_delivr(
     resample: bool = False,
     output_dir: str = DEFAULTS["output_dir"],  # type: ignore
     validation_proportion: float = DEFAULTS["validation_proportion"],  # type: ignore # noqa: E501
+    binary_outcome: bool = False,
     hidden: List[int] = DEFAULTS["hidden"],  # type: ignore
     learning_rate: float = DEFAULTS["learning_rate"],  # type: ignore
     weight_decay: float = DEFAULTS["weight_decay"],  # type: ignore
@@ -121,6 +122,7 @@ def fit_delivr(
         batch_size=batch_size,
         max_epochs=max_epochs,
         accelerator=accelerator,
+        binary_outcome=binary_outcome,
         wandb_project=wandb_project
     )
 
@@ -152,8 +154,14 @@ class OutcomeMLP(MLP):
         hidden: Iterable[int],
         lr: float,
         weight_decay: float,
+        binary_outcome: bool = False,
         activations: Iterable[nn.Module] = [nn.GELU()]
     ):
+        if binary_outcome:
+            loss = F.binary_cross_entropy_with_logits
+        else:
+            loss = F.mse_loss
+
         super().__init__(
             input_size=input_size,
             hidden=hidden,
@@ -161,6 +169,7 @@ class OutcomeMLP(MLP):
             activations=activations,
             lr=lr,
             weight_decay=weight_decay,
+            loss=loss
         )
         self.betas = betas
 
@@ -182,7 +191,7 @@ class OutcomeMLP(MLP):
         # Get h_hat(x_hat)
         y_hat = self.x_to_y(x_hat, covars)
 
-        loss = F.mse_loss(y_hat, y)
+        loss = self.loss(y_hat, y)
 
         self.log(f"outcome_{log_prefix}_loss", loss)
 
@@ -200,6 +209,7 @@ def train_outcome_model(
         batch_size: int,
         max_epochs: int,
         accelerator: Optional[str] = None,
+        binary_outcome: bool = False,
         wandb_project: Optional[str] = None
 ) -> float:
     n_covars = train_dataset[0][3].numel()
@@ -209,6 +219,7 @@ def train_outcome_model(
         hidden=hidden,
         lr=learning_rate,
         weight_decay=weight_decay,
+        binary_outcome=binary_outcome,
     )
 
     return train_model(
