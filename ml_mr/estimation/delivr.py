@@ -255,7 +255,6 @@ class DeLIVREstimator(MREstimator):
 
     @classmethod
     def from_results(cls, dir_name: str) -> "DeLIVREstimator":
-        print("TEST")
         try:
             covars = torch.load(os.path.join(dir_name, "covariables.pt"))
         except FileNotFoundError:
