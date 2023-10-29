@@ -237,8 +237,13 @@ def train_outcome_model(
 
 
 class DeLIVREstimator(MREstimator):
-    def __init__(self, outcome_network: OutcomeMLP):
+    def __init__(
+        self,
+        outcome_network: OutcomeMLP,
+        covars: Optional[torch.Tensor]
+    ):
         self.outcome_network = outcome_network
+        super().__init__(covars)
 
     def iv_reg_function(
         self,
@@ -250,13 +255,20 @@ class DeLIVREstimator(MREstimator):
 
     @classmethod
     def from_results(cls, dir_name: str) -> "DeLIVREstimator":
+        print("TEST")
+        try:
+            covars = torch.load(os.path.join(dir_name, "covariables.pt"))
+        except FileNotFoundError:
+            covars = None
+
         outcome_network = OutcomeMLP.load_from_checkpoint(
-            os.path.join(dir_name, "outcome_network.ckpt")
-        ).to(torch.device("cpu"))
+            os.path.join(dir_name, "outcome_network.ckpt"),
+            map_location=torch.device("cpu")
+        )
 
         outcome_network.eval()
 
-        return cls(outcome_network)
+        return cls(outcome_network, covars)
 
 
 def configure_argparse(parser) -> None:
