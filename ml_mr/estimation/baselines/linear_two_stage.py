@@ -7,7 +7,8 @@ from linearmodels.iv.model import IV2SLS
 from linearmodels.iv.results import IVResults
 import torch
 
-from ..core import IVDataset, MREstimator
+from ..core import MREstimator
+from ...utils.data import IVDataset
 
 
 class TwoSLSEstimator(MREstimator):

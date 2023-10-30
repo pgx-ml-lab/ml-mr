@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 
 import numpy as np
-from ..estimation.core import IVDataset, FullBatchDataLoader
+from .data import IVDataset, FullBatchDataLoader
 from .nn import MLP, OutcomeMLPBase
 
 

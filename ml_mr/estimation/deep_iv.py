@@ -1,9 +1,9 @@
 
 import argparse
-import pickle
 import json
 import os
-from typing import Iterable, List, Literal, Optional, Tuple, Dict, Type
+import pickle
+from typing import Dict, Iterable, List, Literal, Optional, Tuple, Type
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -14,13 +14,13 @@ from torch.utils.data import Dataset, random_split
 from ..logging import info
 from ..utils import default_validate_args, parse_project_and_run_name
 from ..utils.conformal import OutcomeResidualPrediction
+from ..utils.data import (IVDataset, IVDatasetWithGenotypes,
+                          SupervisedLearningWrapper)
 from ..utils.models import (MLP, GaussianNet, MixtureDensityNetwork,
                             OutcomeMLPBase, RidgeDensity)
 from ..utils.nn import DensityModel
 from ..utils.training import train_model
-from .core import (IVDataset, IVDatasetWithGenotypes,
-                   MREstimatorWithUncertainty, SupervisedLearningWrapper)
-
+from .core import MREstimatorWithUncertainty
 
 # Supported models for the exposure network.
 ExposureNetTypeKey = Literal["mixture_density_net", "gaussian_net", "ridge"]

@@ -38,26 +38,25 @@ estimator = DFIVEstimator.from_results("dfiv_estimate")
 
 """
 
-import os
-import json
 import argparse
-from typing import Dict, Optional, Iterable, List, Union
+import json
+import os
+from typing import Dict, Iterable, List, Optional, Union
 
+import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import pytorch_lightning as pl
-from torch.utils.data import random_split, DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, random_split
 
+from ..logging import warn
 from ..utils import default_validate_args
 from ..utils.conformal import OutcomeResidualPrediction
+from ..utils.data import IVDataset, IVDatasetWithGenotypes
 from ..utils.linear import ridge_fit_predict
 from ..utils.nn import build_mlp
 from ..utils.training import train_model
-from ..logging import warn
-from .core import (
-    IVDataset, IVDatasetWithGenotypes, MREstimator, MREstimatorWithUncertainty
-)
+from .core import MREstimator, MREstimatorWithUncertainty
 
 
 DEFAULTS = {
@@ -700,6 +699,7 @@ def fit_dfiv(
 
     if wandb_project is not None:
         import wandb
+
         # TODO log artifact.
         wandb.finish()
 

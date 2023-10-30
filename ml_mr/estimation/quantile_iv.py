@@ -25,8 +25,8 @@ from ..utils.conformal import (
 from ..utils.models import MLP, GaussianNet, OutcomeMLPBase
 from ..utils.quantiles import QuantileLossMulti
 from ..utils.training import train_model, resample_dataset
-from .core import (IVDataset, IVDatasetWithGenotypes, MREstimator,
-                   MREstimatorWithUncertainty)
+from ..utils.data import IVDataset, IVDatasetWithGenotypes
+from .core import MREstimator, MREstimatorWithUncertainty
 
 # Default values definitions.
 # fmt: off
@@ -136,12 +136,13 @@ class ExposureNMQN(MLP):
             add_input_layer_batchnorm=add_input_layer_batchnorm,
             add_hidden_layer_batchnorm=add_hidden_layer_batchnorm,
             activations=activations,
-            binary_output=True,
             lr=lr,
             weight_decay=weight_decay,
             loss=loss,
             _save_hyperparams=False
         )
+
+        self.mlp.append(nn.Sigmoid())
 
         self.save_hyperparameters()
         self.deltas = nn.Linear(hidden[-1] + 1, n_quantiles, bias=False)

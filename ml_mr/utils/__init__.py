@@ -5,7 +5,6 @@ from typing import Tuple, Optional
 
 import torch
 
-from .temperature_scaling.temperature_scaling import temperature_scale
 from ..logging import critical
 
 

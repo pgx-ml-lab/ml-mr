@@ -22,8 +22,8 @@ from ..utils import _cat, default_validate_args, parse_project_and_run_name
 from ..utils.linear import ridge_regression
 from ..utils.models import MLP
 from ..utils.training import train_model, resample_dataset
-from .core import (FullBatchDataLoader, IVDataset, IVDatasetWithGenotypes,
-                   MREstimator)
+from .core import MREstimator
+from ..utils.data import FullBatchDataLoader, IVDatasetWithGenotypes, IVDataset
 
 DEFAULTS = {
     "hidden": [64, 32],
@@ -160,7 +160,7 @@ class OutcomeMLP(MLP):
         if binary_outcome:
             loss = F.binary_cross_entropy_with_logits
         else:
-            loss = F.mse_loss
+            loss = F.mse_loss  # type: ignore
 
         super().__init__(
             input_size=input_size,
