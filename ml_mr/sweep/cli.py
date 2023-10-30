@@ -14,7 +14,7 @@ from typing import List, Iterator, Union
 import numpy as np
 
 from ..estimation import MODELS
-from ..estimation.core import IVDataset
+from ..utils.data import IVDataset
 from ..logging import debug, warn, info
 
 
