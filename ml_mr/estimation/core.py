@@ -177,6 +177,9 @@ class MREstimatorWithUncertainty(MREstimator):
 
 class EnsembleMREstimator(MREstimatorWithUncertainty):
     def __init__(self, *estimators: MREstimator):
+        if len(estimators) < 2:
+            raise ValueError("Need at least two estimators to ensemble.")
+
         self.estimators = estimators
         self.covars = getattr(estimators[0], "covars")
         if self.covars is None:
