@@ -165,9 +165,11 @@ class DeepIVEstimator(MREstimatorWithUncertainty):
         self,
         exposure_network: DensityModel,
         outcome_network: OutcomeResidualPrediction,
+        covars: Optional[torch.Tensor] = None
     ):
         self.exposure_network = exposure_network
         self.outcome_network = outcome_network
+        super().__init__(covars)
 
     @property
     def alpha(self):
@@ -177,6 +179,11 @@ class DeepIVEstimator(MREstimatorWithUncertainty):
     def from_results(cls, dir_name: str) -> "DeepIVEstimator":
         with open(os.path.join(dir_name, "meta.json"), "rt") as f:
             meta = json.load(f)
+
+        try:
+            covars = torch.load(os.path.join(dir_name, "covariables.pt"))
+        except FileNotFoundError:
+            covars = None
 
         cpu = torch.device("cpu")
 
@@ -201,7 +208,7 @@ class DeepIVEstimator(MREstimatorWithUncertainty):
 
         outcome_network_calibrated.q_hat = meta["q_hat"]  # type: ignore
 
-        return cls(exposure_network, outcome_network_calibrated)
+        return cls(exposure_network, outcome_network_calibrated, covars=covars)
 
     def iv_reg_function(
         self,
@@ -505,7 +512,9 @@ def fit_deep_iv(
     assert isinstance(outcome_network_calib.q_hat, torch.Tensor)
     meta["q_hat"] = outcome_network_calib.q_hat.item()
 
-    estimator = DeepIVEstimator(exposure_network, outcome_network_calib)
+    estimator = DeepIVEstimator(
+        exposure_network, outcome_network_calib, covars
+    )
 
     with open(os.path.join(output_dir, "meta.json"), "wt") as f:
         json.dump(meta, f)
