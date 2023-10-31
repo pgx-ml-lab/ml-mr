@@ -195,8 +195,8 @@ class EnsembleMREstimator(MREstimatorWithUncertainty):
         ates = []
         for estimator in self.estimators:
             if isinstance(estimator, MREstimatorWithUncertainty):
-                mu0 = estimator.avg_iv_reg_function(x0)[:, 0, 1]
-                mu1 = estimator.avg_iv_reg_function(x1)[:, 0, 1]
+                mu0 = estimator.avg_iv_reg_function(x0)[:, 0, [1]]
+                mu1 = estimator.avg_iv_reg_function(x1)[:, 0, [1]]
             else:
                 mu0 = estimator.avg_iv_reg_function(x0)
                 mu1 = estimator.avg_iv_reg_function(x1)
@@ -225,7 +225,7 @@ class EnsembleMREstimator(MREstimatorWithUncertainty):
         cates = []
         for estimator in self.estimators:
             if isinstance(estimator, MREstimatorWithUncertainty):
-                cates.append(estimator.cate(x0, x1, covars)[:, 0, 1])
+                cates.append(estimator.cate(x0, x1, covars)[:, 0, [1]])
             else:
                 cates.append(estimator.cate(x0, x1, covars))
 
@@ -250,7 +250,9 @@ class EnsembleMREstimator(MREstimatorWithUncertainty):
         estimates = []
         for estimator in self.estimators:
             if isinstance(estimator, MREstimatorWithUncertainty):
-                estimates.append(estimator.iv_reg_function(x, covars)[:, 0, 1])
+                estimates.append(
+                    estimator.iv_reg_function(x, covars)[:, 0, [1]]
+                )
             else:
                 estimates.append(estimator.iv_reg_function(x, covars))
 
