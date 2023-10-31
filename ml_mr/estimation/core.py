@@ -4,6 +4,8 @@ import torch
 
 from scipy.interpolate import interp1d
 
+from ..logging import info
+
 
 INTERPOLATION = ["linear", "quadratic", "cubic"]
 Interpolation = Literal["linear", "quadratic", "cubic"]
@@ -176,7 +178,9 @@ class MREstimatorWithUncertainty(MREstimator):
 class EnsembleMREstimator(MREstimatorWithUncertainty):
     def __init__(self, *estimators: MREstimator):
         self.estimators = estimators
-        self.covars = estimators[0].covars
+        self.covars = getattr(estimators[0], "covars")
+        if self.covars is None:
+            info("EnsembleMREstimator has no bound covariables.")
 
     def ate(
         self,
