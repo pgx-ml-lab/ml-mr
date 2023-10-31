@@ -194,8 +194,12 @@ class EnsembleMREstimator(MREstimatorWithUncertainty):
     ) -> torch.Tensor:
         ates = []
         for estimator in self.estimators:
-            mu0 = estimator.avg_iv_reg_function(x0)
-            mu1 = estimator.avg_iv_reg_function(x1)
+            if isinstance(estimator, MREstimatorWithUncertainty):
+                mu0 = estimator.avg_iv_reg_function(x0)[:, 0, 1]
+                mu1 = estimator.avg_iv_reg_function(x1)[:, 0, 1]
+            else:
+                mu0 = estimator.avg_iv_reg_function(x0)
+                mu1 = estimator.avg_iv_reg_function(x1)
 
             ates.append(mu1 - mu0)
 
@@ -220,7 +224,10 @@ class EnsembleMREstimator(MREstimatorWithUncertainty):
     ) -> torch.Tensor:
         cates = []
         for estimator in self.estimators:
-            cates.append(estimator.cate(x0, x1, covars))
+            if isinstance(estimator, MREstimatorWithUncertainty):
+                cates.append(estimator.cate(x0, x1, covars)[:, 0, 1])
+            else:
+                cates.append(estimator.cate(x0, x1, covars))
 
         combined = torch.concat(cates, dim=1)
 
@@ -242,7 +249,10 @@ class EnsembleMREstimator(MREstimatorWithUncertainty):
     ) -> torch.Tensor:
         estimates = []
         for estimator in self.estimators:
-            estimates.append(estimator.iv_reg_function(x, covars))
+            if isinstance(estimator, MREstimatorWithUncertainty):
+                estimates.append(estimator.iv_reg_function(x, covars)[:, 0, 1])
+            else:
+                estimates.append(estimator.iv_reg_function(x, covars))
 
         combined = torch.concat(estimates, dim=1)  # n x num_estimators
 
