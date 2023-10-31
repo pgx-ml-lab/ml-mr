@@ -45,7 +45,8 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 
 from ...logging import warn
-from ..core import IVDataset, MREstimator
+from ..core import MREstimator
+from ...utils.data import IVDataset
 from .linear_two_stage import twosls
 
 
@@ -153,7 +154,10 @@ def fit_doubly_ranked(
     for mask in strata:
         cur = df.iloc[mask, :]
         mean_x = cur["x"].mean()
-        cur_beta, cur_se = twosls(cur, "y", "x", ["z"], covar_cols)
+        res = twosls(cur, "y", "x", ["z"], covar_cols)
+        assert isinstance(res, tuple)
+        cur_beta, cur_se = res
+
         results.append((mean_x, cur_beta, cur_se))
 
     results_df = pd.DataFrame(results, columns=["mean_x", "lace", "lace_se"])

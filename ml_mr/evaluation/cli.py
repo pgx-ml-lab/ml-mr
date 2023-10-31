@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 from ..estimation import MODELS, MREstimatorWithUncertainty
-from ..logging import debug, warn
+from ..logging import warn
 from .metrics import (
     mean_coverage,
     mean_prediction_interval_absolute_width,

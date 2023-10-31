@@ -11,10 +11,9 @@ from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import Logger
 
-
-from ..estimation.core import Dataset, FullBatchDataLoader
 from ..logging import info
 from . import parse_project_and_run_name
+from .data import Dataset, FullBatchDataLoader
 
 
 def resample_dataset(dataset: Dataset) -> Dataset:
@@ -98,7 +97,7 @@ def train_model(
     trainer = pl.Trainer(
         log_every_n_steps=1,
         max_epochs=max_epochs,
-        accelerator=accelerator,
+        accelerator=accelerator,  # type: ignore
         callbacks=[
             pl.callbacks.EarlyStopping(
                 monitor=monitored_metric, patience=early_stopping_patience

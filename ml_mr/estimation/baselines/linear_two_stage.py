@@ -7,11 +7,13 @@ from linearmodels.iv.model import IV2SLS
 from linearmodels.iv.results import IVResults
 import torch
 
-from ..core import IVDataset, MREstimator
+from ..core import MREstimator
+from ...utils.data import IVDataset
 
 
 class TwoSLSEstimator(MREstimator):
     def __init__(self, const_beta, exposure_beta, exposure_se):
+        super().__init__(None)
         self.const_beta = torch.tensor(const_beta).reshape(-1, 1)
         self.exposure_beta = torch.tensor(exposure_beta).reshape(-1, 1)
         self.exposure_se = exposure_se

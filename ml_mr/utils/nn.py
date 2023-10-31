@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 from .quantiles import quantile_loss
 from .linear import ridge_regression
-from ..estimation.core import IVDataset, SupervisedLearningWrapper
+from ..utils.data import IVDataset, SupervisedLearningWrapper
 
 
 def build_mlp(
