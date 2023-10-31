@@ -28,6 +28,11 @@ def resample_dataset(dataset: Dataset) -> Dataset:
             # indexing.
             return getattr(dataset, k)
 
+        def to_dataframe(self):
+            df, cols = dataset.to_dataframe()
+            df = df.iloc[bootstrap_idx, :].reset_index(drop=True)
+            return df, cols
+
         def __len__(self):
             return n
 
