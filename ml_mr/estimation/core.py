@@ -182,7 +182,8 @@ class EnsembleMREstimator(MREstimatorWithUncertainty):
         self,
         x0: torch.Tensor,
         x1: torch.Tensor,
-        alpha: float = 0.1
+        alpha: float = 0.1,
+        reduce: bool = True
     ) -> torch.Tensor:
         ates = []
         for estimator in self.estimators:
@@ -192,6 +193,9 @@ class EnsembleMREstimator(MREstimatorWithUncertainty):
             ates.append(mu1 - mu0)
 
         combined = torch.concat(ates, dim=1)
+
+        if not reduce:
+            return combined
 
         return torch.quantile(
             combined,
@@ -204,13 +208,17 @@ class EnsembleMREstimator(MREstimatorWithUncertainty):
         x0: torch.Tensor,
         x1: torch.Tensor,
         covars: torch.Tensor,
-        alpha: float = 0.1
+        alpha: float = 0.1,
+        reduce: bool = True
     ) -> torch.Tensor:
         cates = []
         for estimator in self.estimators:
             cates.append(estimator.cate(x0, x1, covars))
 
         combined = torch.concat(cates, dim=1)
+
+        if not reduce:
+            return combined
 
         return torch.quantile(
             combined,
@@ -222,13 +230,18 @@ class EnsembleMREstimator(MREstimatorWithUncertainty):
         self,
         x: torch.Tensor,
         covars: Optional[torch.Tensor] = None,
-        alpha: float = 0.1
+        alpha: float = 0.1,
+        reduce: bool = True
     ) -> torch.Tensor:
         estimates = []
         for estimator in self.estimators:
             estimates.append(estimator.iv_reg_function(x, covars))
 
         combined = torch.concat(estimates, dim=1)  # n x num_estimators
+
+        if not reduce:
+            return combined
+
         return torch.quantile(
             combined,
             torch.tensor([alpha / 2, 0.5, 1 - alpha / 2]),
