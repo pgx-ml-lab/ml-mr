@@ -10,6 +10,10 @@ This code is adapted from the author's implementation available at:
 
 https://github.com/liyuan9988/DeepFeatureIV
 
+TODO This implementation is not fully updated with the new covariates treatment
+including saving the covariable_labels and exposing the meta dict to the
+estimator.
+
 Test code:
 
 from ml_mr.estimation.core import IVDataset

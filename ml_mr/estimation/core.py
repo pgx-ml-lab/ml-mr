@@ -18,6 +18,7 @@ MREstimatorType = TypeVar("MREstimatorType", bound="MREstimator")
 class MREstimator(object):
     def __init__(
         self,
+        meta: dict,
         covars: Optional[torch.Tensor],
         num_samples: int = 10_000
     ):
@@ -35,6 +36,7 @@ class MREstimator(object):
             covars = covars[idx]
 
         self.covars = covars
+        self.meta = meta
 
     def set_covars(self, covars: torch.Tensor) -> None:
         self.covars = covars

@@ -165,11 +165,12 @@ class DeepIVEstimator(MREstimatorWithUncertainty):
         self,
         exposure_network: DensityModel,
         outcome_network: OutcomeResidualPrediction,
+        meta: dict,
         covars: Optional[torch.Tensor] = None
     ):
         self.exposure_network = exposure_network
         self.outcome_network = outcome_network
-        super().__init__(covars)
+        super().__init__(meta, covars)
 
     @property
     def alpha(self):
@@ -208,7 +209,8 @@ class DeepIVEstimator(MREstimatorWithUncertainty):
 
         outcome_network_calibrated.q_hat = meta["q_hat"]  # type: ignore
 
-        return cls(exposure_network, outcome_network_calibrated, covars=covars)
+        return cls(exposure_network, outcome_network_calibrated, meta=meta,
+                   covars=covars)
 
     def iv_reg_function(
         self,
@@ -514,7 +516,7 @@ def fit_deep_iv(
     meta["q_hat"] = outcome_network_calib.q_hat.item()
 
     estimator = DeepIVEstimator(
-        exposure_network, outcome_network_calib, covars
+        exposure_network, outcome_network_calib, meta, covars
     )
 
     with open(os.path.join(output_dir, "meta.json"), "wt") as f:

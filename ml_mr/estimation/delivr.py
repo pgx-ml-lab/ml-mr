@@ -131,6 +131,7 @@ def fit_delivr(
     meta["outcome_val_loss"] = outcome_val_loss
 
     estimator = DeLIVREstimator.from_results(output_dir)
+
     with open(os.path.join(output_dir, "meta.json"), "wt") as f:
         json.dump(meta, f)
 
@@ -242,10 +243,11 @@ class DeLIVREstimator(MREstimator):
     def __init__(
         self,
         outcome_network: OutcomeMLP,
+        meta: dict,
         covars: Optional[torch.Tensor]
     ):
         self.outcome_network = outcome_network
-        super().__init__(covars)
+        super().__init__(meta, covars)
 
     def iv_reg_function(
         self,
@@ -257,6 +259,9 @@ class DeLIVREstimator(MREstimator):
 
     @classmethod
     def from_results(cls, dir_name: str) -> "DeLIVREstimator":
+        with open(os.path.join(dir_name, "meta.json"), "rt") as f:
+            meta = json.load(f)
+
         try:
             covars = torch.load(os.path.join(dir_name, "covariables.pt"))
         except FileNotFoundError:
@@ -269,7 +274,7 @@ class DeLIVREstimator(MREstimator):
 
         outcome_network.eval()
 
-        return cls(outcome_network, covars)
+        return cls(outcome_network, meta, covars)
 
 
 def configure_argparse(parser) -> None:

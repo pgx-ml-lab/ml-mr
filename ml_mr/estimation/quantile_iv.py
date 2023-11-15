@@ -241,11 +241,12 @@ class QuantileIVEstimator(MREstimator):
         self,
         exposure_network: QIVExposureNetType,
         outcome_network: OutcomeMLP,
-        covars: Optional[torch.Tensor] = None
+        meta: dict,
+        covars: Optional[torch.Tensor] = None,
     ):
         self.exposure_network = exposure_network
         self.outcome_network = outcome_network
-        super().__init__(covars)
+        super().__init__(meta, covars)
 
     def iv_reg_function(
         self, x: torch.Tensor, covars: Optional[torch.Tensor] = None
@@ -281,7 +282,7 @@ class QuantileIVEstimator(MREstimator):
 
         outcome_network.eval()  # type: ignore
 
-        return cls(exposure_network, outcome_network, covars=covars)
+        return cls(exposure_network, outcome_network, meta=meta, covars=covars)
 
 
 def main(args: argparse.Namespace) -> None:
@@ -524,7 +525,7 @@ def fit_quantile_iv(
     exposure_network.to(outcome_network.device)
 
     estimator = QuantileIVEstimator(
-        exposure_network, outcome_network, covars
+        exposure_network, outcome_network, meta, covars
     )
 
     # Save the metadata, estimator statistics and log artifact to WandB if

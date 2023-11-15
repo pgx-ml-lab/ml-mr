@@ -12,8 +12,8 @@ from ...utils.data import IVDataset
 
 
 class TwoSLSEstimator(MREstimator):
-    def __init__(self, const_beta, exposure_beta, exposure_se):
-        super().__init__(None)
+    def __init__(self, const_beta, exposure_beta, exposure_se, meta):
+        super().__init__(meta, None)
         self.const_beta = torch.tensor(const_beta).reshape(-1, 1)
         self.exposure_beta = torch.tensor(exposure_beta).reshape(-1, 1)
         self.exposure_se = exposure_se
@@ -65,7 +65,7 @@ def fit_2sls(
     with open(os.path.join(output_dir, "meta.json"), "wt") as f:
         json.dump(meta, f)
 
-    return TwoSLSEstimator(**estimates)
+    return TwoSLSEstimator(**estimates, meta=meta)
 
 
 def twosls(
