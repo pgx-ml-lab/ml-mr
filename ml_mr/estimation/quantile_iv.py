@@ -439,6 +439,7 @@ def fit_quantile_iv(
     meta = dict(locals())
     meta["model"] = "quantile_iv"
     meta.update(dataset.exposure_descriptive_statistics())
+    meta["covariable_labels"] = dataset.covariable_labels
     del meta["dataset"]  # We don't serialize the dataset.
     del meta["stage2_dataset"]
 
@@ -452,6 +453,7 @@ def fit_quantile_iv(
     # If there is a separate dataset for stage2, we split it too, otherwise
     # we reuse the stage 1 dataset.
     if stage2_dataset is not None:
+        assert dataset.covariable_labels == stage2_dataset.covariable_labels
         stg2_train_dataset, stg2_val_dataset = random_split(
             stage2_dataset, [1 - validation_proportion, validation_proportion]
         )

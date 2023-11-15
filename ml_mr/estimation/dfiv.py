@@ -601,6 +601,7 @@ def fit_dfiv(
     meta = dict(locals())
     meta["model"] = "dfiv"
     meta.update(dataset.exposure_descriptive_statistics())
+    meta["covariable_labels"] = dataset.covariable_labels
     del meta["dataset"]  # We don't serialize the dataset.
 
     covars = dataset.save_covariables(output_dir)

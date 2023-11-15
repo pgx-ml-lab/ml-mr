@@ -434,6 +434,7 @@ def fit_deep_iv(
     meta = dict(locals())
     meta["model"] = "deep_iv"
     meta.update(dataset.exposure_descriptive_statistics())
+    meta["covariable_labels"] = dataset.covariable_labels
     del meta["dataset"]  # We don't serialize the dataset.
 
     covars = dataset.save_covariables(output_dir)

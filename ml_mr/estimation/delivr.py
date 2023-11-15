@@ -89,6 +89,7 @@ def fit_delivr(
     meta = dict(locals())
     meta["model"] = "delivr"
     meta.update(dataset.exposure_descriptive_statistics())
+    meta["covariable_labels"] = dataset.covariable_labels
     del meta["dataset"]
     del meta["stage2_dataset"]
 
@@ -100,6 +101,7 @@ def fit_delivr(
     )
 
     if stage2_dataset is not None:
+        assert dataset.covariable_labels == stage2_dataset.covariable_labels
         stg2_train_dataset, stg2_val_dataset = random_split(
             stage2_dataset, [1 - validation_proportion, validation_proportion]
         )

@@ -33,12 +33,18 @@ class IVDataset(Dataset):
         exposure: torch.Tensor,
         outcome: torch.Tensor,
         ivs: torch.Tensor,
-        covariables: torch.Tensor = torch.Tensor()
+        covariables: torch.Tensor = torch.Tensor(),
+        covariable_labels: Optional[Iterable[str]] = None
     ):
         self.exposure = exposure.reshape(-1, 1)
         self.outcome = outcome.reshape(-1, 1)
         self.ivs = ivs
         self.covariables = covariables
+
+        if covariable_labels is None:
+            self.covariable_labels = None
+        else:
+            self.covariable_labels = list(covariable_labels)
 
         n = self.ivs.size(0)
         assert n != 0
@@ -87,6 +93,9 @@ class IVDataset(Dataset):
 
         for variable, name in contents:
             add(variable, name)
+
+        if self.covariable_labels is not None:
+            cols["covariables"] = self.covariable_labels
 
         df = pd.DataFrame(
             np.hstack(stack),
@@ -183,7 +192,9 @@ class IVDataset(Dataset):
         ivs = torch.from_numpy(dataframe[iv_cols].values).float()
         covars = torch.from_numpy(dataframe[covariable_cols].values).float()
 
-        return IVDataset(exposure, outcome, ivs, covars)
+        return IVDataset(
+            exposure, outcome, ivs, covars, covariable_labels=covariable_cols
+        )
 
     @staticmethod
     def from_json_configuration(configuration) -> "IVDataset":
