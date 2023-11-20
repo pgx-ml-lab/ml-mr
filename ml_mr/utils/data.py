@@ -166,9 +166,11 @@ class IVDataset(Dataset):
         covariable_cols: Iterable[str] = []
     ) -> "IVDataset":
         # We'll do complete case analysis if the user provides a df with NAs.
+
         keep_cols = [col for col in itertools.chain(
             [exposure_col, outcome_col], iv_cols, covariable_cols
         ) if col is not None]
+
         dataframe = dataframe[keep_cols]
         if dataframe.isna().values.any():
             n_before = dataframe.shape[0]

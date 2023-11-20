@@ -9,7 +9,7 @@ import argparse
 import random
 import itertools
 import multiprocessing
-from typing import List, Iterator, Union
+from typing import List, Iterator, Union, Optional
 
 import numpy as np
 
@@ -183,12 +183,14 @@ class SweepConfig:
     def __init__(
         self,
         dataset_config: dict,
+        stage2_dataset_config: Optional[dict],
         model: str,
         sweep_directory: str,
         parameters: List["SweepParameter"],
         max_runs: int
     ):
         self.dataset_config = dataset_config
+        self.stage2_dataset_config = stage2_dataset_config
         self.model = model
         self.sweep_directory = os.path.abspath(sweep_directory)
         self.parameters = parameters
@@ -205,6 +207,8 @@ class SweepConfig:
         print("*** Sweep configuration ***")
         print("[dataset]")
         print(self.dataset_config)
+        print("[dataset_stage_2]")
+        print(self.stage2_dataset_config)
         print()
 
         print("[sweep_config]")
@@ -287,7 +291,8 @@ def parse_config(filename: str) -> SweepConfig:
         parameters.append(parse_parameter(parameter))
 
     return SweepConfig(
-        config["dataset"], model, sweep_directory, parameters, max_runs
+        config["dataset"], config.get("stage2_dataset"),
+        model, sweep_directory, parameters, max_runs
     )
 
 
@@ -296,6 +301,8 @@ def create_sweep_database(sweep_config: SweepConfig) -> str:
         sweep_config.sweep_directory,
         "ml_mr_sweep_runs.db"
     ))
+
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
 
     con = sqlite3.connect(filename)
     cur = con.cursor()
@@ -306,6 +313,15 @@ def create_sweep_database(sweep_config: SweepConfig) -> str:
         "insert into dataset values (?)",
         (json.dumps(sweep_config.dataset_config), )
     )
+    con.commit()
+
+    # Create the table with the stage2 dataaset information.
+    cur.execute("create table stage2_dataset (json_conf text);")
+    if sweep_config.stage2_dataset_config is not None:
+        cur.execute(
+            "insert into stage2_dataset values (?)",
+            (json.dumps(sweep_config.stage2_dataset_config), )
+        )
     con.commit()
 
     # Create the table with the sweep metadata.
@@ -449,10 +465,22 @@ def worker(
 
         cur.execute("select json_conf from dataset;")
         dataset_conf = json.loads(cur.fetchone()[0])
+
+        cur.execute("select json_conf from stage2_dataset;")
+        stage2_json_tuple = cur.fetchone()
+        if stage2_json_tuple is not None:
+            stage2_dataset_conf: Optional[dict] =\
+                json.loads(stage2_json_tuple[0])
+        else:
+            stage2_dataset_conf = None
     finally:
         db_lock.release()
 
     dataset = IVDataset.from_json_configuration(dataset_conf)
+    stage2_dataset: Optional[IVDataset] = (
+        IVDataset.from_json_configuration(stage2_dataset_conf)
+        if stage2_dataset_conf is not None else None
+    )
     fit_func = MODELS[meta["model"]]["estimate"]
 
     while True:
@@ -505,6 +533,12 @@ def worker(
         delta_t: Union[str, float] = "null"
         try:
             t0 = time.time()
+
+            # Add stage2_dataset if requested by user only (some estimators
+            # may not support it as a kwarg to the fit function).
+            if stage2_dataset is not None:
+                task["stage2_dataset"] = stage2_dataset
+
             fit_func(  # type: ignore
                 dataset=dataset,
                 output_dir=f"estimate_run_{run_id}",
