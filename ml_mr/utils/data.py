@@ -92,7 +92,8 @@ class IVDataset(Dataset):
                 )
 
         for variable, name in contents:
-            add(variable, name)
+            if variable.shape[0] > 0:
+                add(variable, name)
 
         if self.covariable_labels is not None:
             cols["covariables"] = self.covariable_labels

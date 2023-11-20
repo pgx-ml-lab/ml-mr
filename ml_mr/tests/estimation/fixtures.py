@@ -12,7 +12,7 @@ class MREstimatorFromFunction(MREstimator):
         f: Callable[[torch.Tensor, Optional[torch.Tensor]], torch.Tensor],
         covars: Optional[torch.Tensor] = None
     ):
-        super().__init__(covars)
+        super().__init__({}, covars)
         self.f = f
 
     def iv_reg_function(
@@ -31,7 +31,7 @@ class MREstimatorWithUncertaintyFromFunction(
         f: Callable[[torch.Tensor, Optional[torch.Tensor]], torch.Tensor],
         covars: Optional[torch.Tensor] = None
     ):
-        super().__init__(covars)
+        super().__init__({}, covars)
         self.f = f
 
     def iv_reg_function(
