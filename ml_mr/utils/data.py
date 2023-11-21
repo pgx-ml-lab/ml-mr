@@ -6,12 +6,17 @@ import os
 
 import pandas as pd
 import numpy as np
-from pytorch_genotypes.dataset import (BACKENDS, GeneticDatasetBackend,
-                                       PhenotypeGeneticDataset)
 from torch.utils.data import Dataset, DataLoader
 import torch
 
 from ..logging import warn
+
+try:
+    from pytorch_genotypes.dataset import (BACKENDS, GeneticDatasetBackend,
+                                           PhenotypeGeneticDataset)
+    PT_GENO_AVAIL = True
+except ImportError:
+    PT_GENO_AVAIL = False
 
 
 IVDatasetBatch = Tuple[
@@ -307,7 +312,7 @@ class FullBatchDataLoader(DataLoader):
 class IVDatasetWithGenotypes(IVDataset):
     def __init__(
         self,
-        genetic_dataset: PhenotypeGeneticDataset,
+        genetic_dataset: "PhenotypeGeneticDataset",
         exposure_col: str,
         outcome_col: str,
         iv_cols: Iterable[str],
@@ -318,6 +323,10 @@ class IVDatasetWithGenotypes(IVDataset):
         TODO: This is not tested yet.
 
         """
+        if not PT_GENO_AVAIL:
+            raise ImportError("pytorch_genotypes needed to create "
+                              "IVDatasetWithGenotypes")
+
         self.genetic_dataset = genetic_dataset
 
         instruments_set = set(iv_cols)

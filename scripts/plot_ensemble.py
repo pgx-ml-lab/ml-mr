@@ -74,8 +74,14 @@ def main():
         color=args.color
     )
 
+    plt.xlabel("X")
+    plt.ylabel("Average treatment effect (compared to X=0)")
+
     plt.axhline(y=1 if args.do_exp else 0, ls="-.", lw=1, color="#333333")
-    plt.savefig(args.output)
+    if args.output.endswith(".png"):
+        plt.savefig(args.output, dpi=400)
+    else:
+        plt.savefig(args.output)
 
 
 if __name__ == "__main__":
