@@ -328,3 +328,23 @@ class Uniform(Variable):
             size = self.size
 
         return np.random.uniform(low=self.low, high=self.high, size=size)
+
+
+class Exponential(Variable):
+    def __init__(
+        self,
+        name: str,
+        scale: float = 1.0,
+        size: Optional[int] = None
+    ):
+        super().__init__(name)
+        self.scale = scale
+        self.size = size
+
+    def __call__(self, sim: Simulation):
+        if self.size is None:
+            size = sim.n
+        else:
+            size = self.size
+
+        return np.random.exponential(scale=self.scale, size=size)
