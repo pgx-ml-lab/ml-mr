@@ -1,4 +1,4 @@
-from .core import MREstimator, MREstimatorWithUncertainty
+from .core import MREstimator, MREstimatorWithUncertainty, EnsembleMREstimator
 
 from . import deep_iv
 from . import quantile_iv

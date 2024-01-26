@@ -12,11 +12,14 @@ import csv
 import json
 import os
 import sys
+from typing import Tuple, Optional, List
 
 import numpy as np
 import torch
 
-from ..estimation import MODELS, MREstimatorWithUncertainty
+from ..estimation import (
+    MODELS, MREstimatorWithUncertainty, MREstimator, EnsembleMREstimator
+)
 from ..logging import warn
 from .metrics import (
     mean_coverage,
@@ -108,6 +111,12 @@ def parse_args(argv):
         help="Alpha (miscoverage) level for prediction intervals and metrics."
     )
 
+    parser.add_argument(
+        "--ensemble",
+        action="store_true",
+        help="Ensemble the input estimators."
+    )
+
     args = parser.parse_args(argv)
 
     if args.domain is not None and args.domain_95:
@@ -116,6 +125,26 @@ def parse_args(argv):
         )
 
     return args
+
+
+def get_estimator(estimator_path: str) -> Optional[Tuple[dict, MREstimator]]:
+    # Try to detect model type.
+    meta_filename = os.path.join(estimator_path, "meta.json")
+    try:
+        with open(meta_filename, "rt") as f:
+            meta = json.load(f)
+    except FileNotFoundError:
+        warn(
+            f"Could not find metadata for ml-mr fitted model in "
+            f"'{estimator_path}'. Ignoring."
+        )
+        return None
+
+    loader = MODELS[meta["model"]]["load"]
+
+    meta["filename"] = estimator_path
+
+    return meta, loader(estimator_path)
 
 
 def main():
@@ -166,23 +195,36 @@ def main():
 
     n_plotted = 0
     n_input = len(args.input)
-    legend_lines = []
-    for input in args.input:
-        # Try to detect model type.
-        meta_filename = os.path.join(input, "meta.json")
-        try:
-            with open(meta_filename, "rt") as f:
-                meta = json.load(f)
-        except FileNotFoundError:
+
+    def estimators_generator():
+        for input in args.input:
+            cur_estimator = get_estimator(input)
+            if cur_estimator is None:
+                continue
+            yield cur_estimator
+
+    estimators = list(estimators_generator())
+
+    # If the number of inputs is > 1 and we ask for ensembling, we create the
+    # ensembling estimator here.
+    if n_input > 1 and args.ensemble:
+        estimator = EnsembleMREstimator(*[e[1] for e in estimators])
+
+        # We use metadata from the first estimator for things like the range
+        # of the exposure, etc.
+        meta = estimators[0][0]
+        meta["filename"] = "Ensemble estimator"
+        estimators = [(meta, estimator)]
+        n_input = 1
+
+        if args.meta_keys:
             warn(
-               f"Could not find metadata for ml-mr fitted model in "
-               f"'{input}'. Ignoring."
+                "Meta keys may not work as expected with ensemble estimates. "
+                "The meta keys from the first estimator will be extracted."
             )
-            continue
 
-        if args.domain_95:
-            domain_lower, domain_upper = meta["exposure_95_percentile"]
-
+    legend_lines = []
+    for meta, estimator in estimators:
         meta_values = []
         if args.meta_keys:
             meta_values = [
@@ -194,19 +236,11 @@ def main():
             assert domain_upper is None
             domain_lower, domain_upper = meta["domain"]
 
-        loader = MODELS[meta["model"]]["load"]
-
-        try:
-            estimator = loader(input)
-        except FileNotFoundError:
-            warn(f"Couldn't load model '{input}'. Ignoring.")
-            continue
-
         cur_mse = mse(
             estimator, true_function, domain=(domain_lower, domain_upper),
         )
 
-        row = [input, cur_mse]
+        row = [meta["filename"], cur_mse]
         if isinstance(estimator, MREstimatorWithUncertainty):
             width = mean_prediction_interval_absolute_width(
                 estimator, (domain_lower, domain_upper),
@@ -239,7 +273,7 @@ def main():
                     estimator,
                     true_function,
                     domain=(domain_lower, domain_upper),
-                    label=input.lstrip("_"),  # Otherwise ignored by MPL
+                    label=meta["filename"].lstrip("_"),
                     plot_structural=True if n_plotted == 0 else False,
                     alpha=args.alpha,
                     ax=ax,
