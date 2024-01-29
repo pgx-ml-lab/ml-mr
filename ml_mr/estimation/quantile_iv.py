@@ -443,6 +443,10 @@ def fit_quantile_iv(
         raise ValueError(
             f"Requested activation: '{activation}' is not a class in torch.nn."
         )
+    else:
+        # Attempt to instantiate. We don't support parametrized activations
+        # with no default values, so this may fail.
+        activation = activation()
 
     # Create output directory if needed.
     if not os.path.isdir(output_dir):
