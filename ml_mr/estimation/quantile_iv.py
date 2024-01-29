@@ -46,6 +46,7 @@ DEFAULTS = {
     ) else "cpu",
     "validation_proportion": 0.2,
     "output_dir": "quantile_iv_estimate",
+    "activation": "GELU",
 }
 # fmt: on
 
@@ -315,6 +316,7 @@ def train_exposure_model(
     input_size: int,
     output_dir: str,
     hidden: List[int],
+    activation: nn.Module,
     learning_rate: float,
     weight_decay: float,
     batch_size: int,
@@ -329,6 +331,7 @@ def train_exposure_model(
         "n_quantiles": n_quantiles,
         "input_size": input_size,
         "hidden": hidden,
+        "activations": [activation],
         "lr": learning_rate,
         "weight_decay": weight_decay,
         "add_input_layer_batchnorm": add_input_batchnorm,
@@ -363,6 +366,7 @@ def train_outcome_model(
     exposure_network: QIVExposureNetType,
     output_dir: str,
     hidden: List[int],
+    activation: nn.Module,
     learning_rate: float,
     weight_decay: float,
     batch_size: int,
@@ -383,6 +387,7 @@ def train_outcome_model(
         hidden=hidden,
         add_input_layer_batchnorm=add_input_batchnorm,
         binary_outcome=binary_outcome,
+        activations=[activation],
     )
 
     info(f"Loss: {model.loss}")
@@ -424,6 +429,7 @@ def fit_quantile_iv(
     outcome_batch_size: int = DEFAULTS["outcome_batch_size"],  # type: ignore
     outcome_max_epochs: int = DEFAULTS["outcome_max_epochs"],  # type: ignore
     outcome_add_input_batchnorm: bool = DEFAULTS["outcome_add_input_batchnorm"],  # type: ignore # noqa: E501
+    activation: str = DEFAULTS["activation"],  # type: ignore
     accelerator: str = DEFAULTS["accelerator"],  # type: ignore
     wandb_project: Optional[str] = None,
 ) -> QuantileIVEstimator:
@@ -431,6 +437,12 @@ def fit_quantile_iv(
         dataset = resample_dataset(dataset)  # type: ignore
         if stage2_dataset is not None:
             stage2_dataset = resample_dataset(stage2_dataset)  # type: ignore
+
+    activation = getattr(nn, activation)
+    if activation is None:
+        raise ValueError(
+            f"Requested activation: '{activation}' is not a class in torch.nn."
+        )
 
     # Create output directory if needed.
     if not os.path.isdir(output_dir):
@@ -470,6 +482,7 @@ def fit_quantile_iv(
         input_size=dataset.n_exog(),
         output_dir=output_dir,
         hidden=exposure_hidden,
+        activation=activation,
         learning_rate=exposure_learning_rate,
         weight_decay=exposure_weight_decay,
         batch_size=exposure_batch_size,
@@ -503,6 +516,7 @@ def fit_quantile_iv(
         exposure_network=exposure_network,
         output_dir=output_dir,
         hidden=outcome_hidden,
+        activation=activation,
         learning_rate=outcome_learning_rate,
         weight_decay=outcome_weight_decay,
         batch_size=outcome_batch_size,
@@ -616,7 +630,7 @@ def save_estimator_statistics(
     df = pd.DataFrame({"x": xs.reshape(-1), "y_do_x": ys})
 
     plt.figure()
-    plt.scatter(df["x"], df["y_do_x"], label="Estimated Y | do(X=x)", s=3)
+    plt.scatter(df["x"], df["y_do_x"], label="Estimated IV regression", s=3)
 
     if "y_do_x_lower" in df.columns:
         # Add the CI on the plot.
@@ -644,7 +658,7 @@ def configure_argparse(parser) -> None:
         type=int,
         help="Number of quantiles of the exposure distribution to estimate in "
         "the exposure model.",
-        required=True,
+        default=DEFAULTS["n_quantiles"]
     )
 
     parser.add_argument("--output-dir", default=DEFAULTS["output_dir"])
@@ -699,6 +713,14 @@ def configure_argparse(parser) -> None:
         help="Activates the Weights and Biases logger using the provided "
              "project name. Patterns such as project:run_name are also "
              "allowed."
+    )
+
+    # TODO add support for this for all estimators.
+    parser.add_argument(
+        "--activation",
+        default=DEFAULTS["activation"],
+        type=str,
+        help="Activation function (name should be a valid class in torch.nn)",
     )
 
     MLP.add_mlp_arguments(

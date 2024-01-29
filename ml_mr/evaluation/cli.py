@@ -12,7 +12,7 @@ import csv
 import json
 import os
 import sys
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional
 
 import numpy as np
 import torch
