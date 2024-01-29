@@ -438,10 +438,12 @@ def fit_quantile_iv(
         if stage2_dataset is not None:
             stage2_dataset = resample_dataset(stage2_dataset)  # type: ignore
 
-    activation = getattr(nn, activation)
+    activation_str = activation
+    activation = getattr(nn, activation_str)
     if activation is None:
         raise ValueError(
-            f"Requested activation: '{activation}' is not a class in torch.nn."
+            f"Requested activation: '{activation_str}' is not a class in "
+            f"torch.nn."
         )
     else:
         # Attempt to instantiate. We don't support parametrized activations
@@ -457,6 +459,7 @@ def fit_quantile_iv(
     meta["model"] = "quantile_iv"
     meta.update(dataset.exposure_descriptive_statistics())
     meta["covariable_labels"] = dataset.covariable_labels
+    meta["activation"] = activation_str  # Serialize str not class.
     del meta["dataset"]  # We don't serialize the dataset.
     del meta["stage2_dataset"]
 
