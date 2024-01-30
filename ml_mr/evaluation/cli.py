@@ -234,7 +234,11 @@ def main():
         # Set domain if it wasn't set explicitly.
         if domain_lower is None:
             assert domain_upper is None
-            domain_lower, domain_upper = meta["domain"]
+
+            if args.domain_95:
+                domain_lower, domain_upper = meta["exposure_95_percentile"]
+            else:
+                domain_lower, domain_upper = meta["domain"]
 
         cur_mse = mse(
             estimator, true_function, domain=(domain_lower, domain_upper),
