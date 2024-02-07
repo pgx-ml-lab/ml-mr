@@ -65,8 +65,11 @@ class ExposureQuantileMLP(MLP):
     ):
         """The model will predict q quantiles."""
         assert n_quantiles >= 3
+        # Previous implementation used:
+        # (i + 1) / (n_quantiles + 1) for i in range(n_quantiles)]
+        # However, it is more theoretically sound to use:
         self.quantiles = torch.tensor([
-            (i + 1) / (n_quantiles + 1) for i in range(n_quantiles)]
+            (2 * k - 1) / (2 * n_quantiles) for k in range(1, n_quantiles + 1)]
         )
 
         loss = QuantileLossMulti(self.quantiles)
@@ -117,7 +120,7 @@ class ExposureNMQN(MLP):
         """The model will predict q quantiles."""
         assert n_quantiles >= 3
         self.quantiles = torch.tensor([
-            (i + 1) / (n_quantiles + 1) for i in range(n_quantiles)]
+            (2 * k - 1) / (2 * n_quantiles) for k in range(1, n_quantiles + 1)]
         )
 
         loss = QuantileLossMulti(self.quantiles)
