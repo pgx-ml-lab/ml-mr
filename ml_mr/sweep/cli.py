@@ -445,7 +445,7 @@ def _fetchone_as_dict(cur: sqlite3.Cursor) -> dict:
 
 def worker(
     db_filename: str,
-    db_lock: multiprocessing.synchronize.Lock,
+    db_lock,  # multiprocessing.Lock. Left untyped for compatibility.
     stop_flag
 ):
     con = sqlite3.connect(db_filename)
