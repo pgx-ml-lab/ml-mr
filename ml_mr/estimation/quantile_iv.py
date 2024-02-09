@@ -6,7 +6,7 @@ distribution.
 import argparse
 import json
 import os
-from typing import Iterable, List, Optional, Tuple, Any, Union
+from typing import Iterable, List, Optional, Tuple, Any, Union, Type
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -268,7 +268,7 @@ class QuantileIVEstimator(MREstimator):
         except FileNotFoundError:
             covars = None
 
-        exposure_net_cls: type[pl.LightningModule] = (
+        exposure_net_cls: Type[pl.LightningModule] = (
             ExposureNMQN if meta.get("nmqn", False)
             else ExposureQuantileMLP
         )
@@ -328,7 +328,7 @@ def train_exposure_model(
     accelerator: Optional[str] = None,
     wandb_project: Optional[str] = None,
     nmqn_penalty_lambda: Optional[float] = None
-) -> Tuple[type[QIVExposureNetType], float]:
+) -> Tuple[Type[QIVExposureNetType], float]:
     info("Training exposure model.")
     kwargs = {
         "n_quantiles": n_quantiles,
