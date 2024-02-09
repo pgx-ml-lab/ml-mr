@@ -1,4 +1,4 @@
-from typing import Literal, Callable, TypeVar, Optional, Union
+from typing import Literal, Callable, TypeVar, Optional, Union, Type
 import numpy as np
 import torch
 
@@ -136,7 +136,7 @@ class MREstimator(object):
 
     @classmethod
     def from_results(
-        cls: type[MREstimatorType],
+        cls: Type[MREstimatorType],
         filename: str
     ) -> MREstimatorType:
         """Initialize an estimator from the results.
