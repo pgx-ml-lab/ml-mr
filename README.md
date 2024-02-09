@@ -31,12 +31,12 @@ We presented _ml-mr_ at the [Great Lakes Bioinformatics 2023 conference](https:/
 # Installation
 
 ```
-pip install ml-mr  # Only after cloning...
+# Clone repository.
+git clone git@github.com:legaultmarc/ml-mr.git
+pip install ml-mr
 ```
 
-Installation is a bit tedious because we haven't published _ml-mr_ to the PyPI yet. This will be done prior to publication. If you want help getting started, feel free to contact me.
-
-Note that you may need to install [pytorch-genotypes](https://github.com/legaultmarc/pytorch-genotypes) by following the instructions before installing _ml-mr_.
+We recommend setting up [Weights and Biases](https://wandb.ai/quickstart). It is integrated with our estimator module and will help track training metrics to ensure convergence and diagnose problems.
 
 # Simulation
 
@@ -53,7 +53,7 @@ Here's an example command that would train a _Quantile IV_ model.
 ```bash
 ml-mr estimation \
   quantile_iv \
-  --q 10 \
+  --n-quantiles 10 \
   --data filename.tsv.gz \
   --exposure x --outcome y --instruments v{1..20} \
   --wandb-project my_fit
@@ -64,10 +64,10 @@ ml-mr estimation \
 | Algorithm | Reference | Comments |
 | --------- | --------- | -------- |
 | Deep IV   | Hartford J, _et al._ _ICLR_ (2017) | We implement three different density estimators for the 1st stage: ridge regression, mixture density network (as proposed in the original paper) and a gaussian network. We recommend using the **gaussian network** which performed best in simulation studies. This can be done using the ``--exposure-network-type gaussian_net`` option. |
-| Quantile IV | Unpublished | We derived a new estimator we call quantile IV. It is similar to Deep IV but uses quantile regression to learn quantiles of the conditional exposure distribution. Instead of sampling, it then uses quantile midpoints to train the outcome network allowing for simple averaging. |
+| Quantile IV | Legault MA, _et al._ medRxiv (2024) | We derived a new estimator we call Quantile IV. It is similar to Deep IV but uses quantile regression to learn quantiles of the conditional exposure distribution. Instead of sampling, it then uses quantile midpoints to train the outcome network allowing for simple averaging. |
 | Deep feature IV | Xu L, _et al._ _ICLR_ (2021) | This method also has two stages, but it is quite different from Deep IV and others. It learns feature mappings for the instruments and for the exposure and estimates the causal effect using penalized two stage least squares regression on these learned features. |
 
-In the future, we hope to include algorithms that rely on deep generalized method of moments and on kernel instrumental variable methods.
+In the future, we hope to include algorithms that rely on deep generalized method of moments and on kernel instrumental variable methods. Other baseline methods (_e.g._ LACE estimator, DeLIVR, 2SLS) are implemented, but they are meant to be used for simple benchmarking and comparisons.
 
 
 ## Example of the command-line utility documentation / help page
@@ -151,6 +151,69 @@ Outcome Model Parameters:
 
 </details>
 
+## Bootstrapping and ensembling
+
+To estimate confidence intervals, we often rely to bagging. Here we describe how to achieve this for the Quantile IV estimator. The other estimators may not support boostrapping yet. We rely on [GNU Parallel](https://www.gnu.org/software/parallel/) to fit the bootstrap resamples on an arbitrary number of devices.
+
+First, we fit 50 Quantile IV models with bootstrap resampling (_i.e._ resampling the $n$ data points with replacement).
+
+```
+# Use -j to control the number of parallel jobs.
+# Here, we use 20 jobs and consequentially 20 CPUs
+#
+# We recommend using --halt-on-error 2 so that parallel stops if one of the
+# fit crashes with an error. This most often happens when there is a file not
+# found error or other problems.
+#
+# For Quantile IV, the --fast flag avoids saving plots of the causal effect
+# and other statistics that are irrelevant when we want to do bagging.
+#
+# We use the 'seq' command to generate an increasing list of integers 
+# corresponding to the bootstrap iteration index.
+parallel --halt-on-error 2 -j 20 ml-mr estimation quantile_iv \
+  --data $filename \
+  --sep ',' \
+  --exposure exposure \
+  --outcome outcome \
+  --instruments v1 v2 v3 v4 v5 v6 v7 v8 v9 v10 \
+  --fast \
+  --resample \
+  --output "bs_"{} ::: $(seq 1 50)
+
+# After fitting, the ensembling can be done using the API or, for example
+# using the ml-mr evaluation module which will make plotting easy.
+ml-mr evaluation \
+  --true-function='lambda x: 0' \
+  --plot --plot-filename my_ensemble_estimator.png \
+  --input bs_* \
+  --ensemble
+
+```
+
+To get a ensembling estimator instance using the API, the procedure looks like:
+```python
+from ml_mr.estimation.core import EnsembleMREstimator
+from ml_mr.estimation.quantile_iv import QuantileIVEstimator
+
+def get_ensemble_estimator(template, n, cls=QuantileIVEstimator):
+    estimators = []
+    for i in range(n):
+        try:
+            filename = template.format(i=i)
+            estimator = cls.from_results(filename)
+            estimators.append(estimator)
+
+        except FileNotFoundError:
+            pass
+
+    return EnsembleMREstimator(*estimators)
+
+# The returned object will support all of the methods (e.g. ate, cate,
+# iv_reg_function) from MREstimator described above.
+```
+
+There is also a script in the ``ml-mr/scripts`` folder to facilitate plotting of ensemble estimators.
+
 # Evaluation
 
 When the true causal function is known, the evaluation module can be used to compare different instrumental variable estimates.
@@ -184,6 +247,8 @@ ml-mr  \
     --true-function 'my_file.py:my_causal_function' \
     --plot
 ```
+
+A common practice is to focus on the central 95% of the exposure range. This can be done automatically using the ``--domain-95`` flag. If the user wishes to ensemble the provided estimators (_e.g._ if they were fit using bootstrap resamples and the user wants a simple bagging estimator) the ``--ensemble`` flag can be used.
 
 ## Metrics
 
