@@ -45,6 +45,7 @@ DEFAULTS = {
         torch.cuda.is_available() and torch.cuda.device_count() > 0
     ) else "cpu",
     "validation_proportion": 0.2,
+    "outcome_type": "continuous",
     "output_dir": "quantile_iv_estimate",
     "activation": "GELU",
 }
@@ -301,6 +302,7 @@ def main(args: argparse.Namespace) -> None:
 
     # Automatically add the model hyperparameters.
     kwargs = {k: v for k, v in vars(args).items() if k in DEFAULTS.keys()}
+    del kwargs["outcome_type"]
 
     fit_quantile_iv(
         dataset=dataset,
@@ -308,6 +310,7 @@ def main(args: argparse.Namespace) -> None:
         wandb_project=args.wandb_project,
         nmqn=args.nmqn,
         resample=args.resample,
+        binary_outcome=args.outcome_type == "binary",
         **kwargs,
     )
 
@@ -681,7 +684,7 @@ def configure_argparse(parser) -> None:
 
     parser.add_argument(
         "--outcome-type",
-        default="continuous",
+        default=DEFAULTS["outcome_type"],
         choices=["continuous", "binary"],
         help="Variable type for the outcome (binary vs continuous).",
     )
