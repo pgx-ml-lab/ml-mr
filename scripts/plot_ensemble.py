@@ -18,6 +18,7 @@ def parse_args():
     parser.add_argument("--do-exp", action="store_true")
     parser.add_argument("--show-all", action="store_true")
     parser.add_argument("--color", default="black")
+    parser.add_argument("--alpha", default=0.05)
 
     return parser.parse_args()
 
@@ -54,7 +55,7 @@ def main():
                      color=args.color)
 
     ate = torch.quantile(
-        ate, torch.Tensor([0.05, 0.5, 0.95]), dim=1
+        ate, torch.Tensor([args.alpha / 2, 0.5, 1 - args.alpha / 2]), dim=1
     ).T.reshape(-1, 1, 3)
 
     if args.do_exp:
