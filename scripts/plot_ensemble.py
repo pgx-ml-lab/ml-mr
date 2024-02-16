@@ -18,6 +18,7 @@ def parse_args():
     parser.add_argument("--do-exp", action="store_true")
     parser.add_argument("--show-all", action="store_true")
     parser.add_argument("--color", default="black")
+    parser.add_argument("--domain-95", action="store_true")
     parser.add_argument("--alpha", default=0.05, type=float)
 
     return parser.parse_args()
@@ -33,6 +34,7 @@ def main():
             with open(os.path.join(dirname, "meta.json")) as f:
                 meta = json.load(f)
                 domain = meta["domain"]
+                domain95 = meta.get("exposure_95_percentile")
         except FileNotFoundError:
             print("Can't load estimator in ", dirname)
             continue
@@ -41,7 +43,11 @@ def main():
 
     ensemble = EnsembleMREstimator(*estimators)
 
-    xs = torch.linspace(*domain, 100)
+    if args.domain_95:
+        xs = torch.linspace(*domain95, 100)
+    else:
+        xs = torch.linspace(*domain, 100)
+
     ate = ensemble.ate(torch.tensor([[0.0]]), xs.reshape(-1, 1), reduce=False)
 
     if args.show_all:
