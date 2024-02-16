@@ -18,7 +18,7 @@ def parse_args():
     parser.add_argument("--do-exp", action="store_true")
     parser.add_argument("--show-all", action="store_true")
     parser.add_argument("--color", default="black")
-    parser.add_argument("--alpha", default=0.05)
+    parser.add_argument("--alpha", default=0.05, type=float)
 
     return parser.parse_args()
 
