@@ -39,12 +39,14 @@ class IVDataset(Dataset):
         outcome: torch.Tensor,
         ivs: torch.Tensor,
         covariables: torch.Tensor = torch.Tensor(),
-        covariable_labels: Optional[Iterable[str]] = None
+        covariable_labels: Optional[Iterable[str]] = None,
+        sampling_weights: Optional[torch.Tensor] = None
     ):
         self.exposure = exposure.reshape(-1, 1)
         self.outcome = outcome.reshape(-1, 1)
         self.ivs = ivs
         self.covariables = covariables
+        self.sampling_weights = sampling_weights
 
         if covariable_labels is None:
             self.covariable_labels = None
@@ -85,6 +87,9 @@ class IVDataset(Dataset):
             (self.ivs, "ivs"),
             (self.covariables, "covariables")
         ]
+
+        if self.sampling_weights is not None:
+            contents.append((self.sampling_weights, "sampling_weights"))
 
         def add(variable, name):
             mat = variable.numpy()
@@ -168,12 +173,14 @@ class IVDataset(Dataset):
         exposure_col: Optional[str],
         outcome_col: Optional[str],
         iv_cols: Iterable[str],
-        covariable_cols: Iterable[str] = []
+        covariable_cols: Iterable[str] = [],
+        sampling_weights_col: Optional[str] = None,
     ) -> "IVDataset":
         # We'll do complete case analysis if the user provides a df with NAs.
 
         keep_cols = [col for col in itertools.chain(
-            [exposure_col, outcome_col], iv_cols, covariable_cols
+            [exposure_col, outcome_col], iv_cols, covariable_cols,
+            [sampling_weights_col]
         ) if col is not None]
 
         dataframe = dataframe[keep_cols]
@@ -197,11 +204,19 @@ class IVDataset(Dataset):
         else:
             outcome = torch.Tensor()
 
+        if sampling_weights_col is not None:
+            sampling_weights = torch.from_numpy(
+                dataframe[sampling_weights_col].values
+            ).float()
+        else:
+            sampling_weights = None
+
         ivs = torch.from_numpy(dataframe[iv_cols].values).float()
         covars = torch.from_numpy(dataframe[covariable_cols].values).float()
 
         return IVDataset(
-            exposure, outcome, ivs, covars, covariable_labels=covariable_cols
+            exposure, outcome, ivs, covars, covariable_labels=covariable_cols,
+            sampling_weights=sampling_weights
         )
 
     @staticmethod
@@ -240,7 +255,8 @@ class IVDataset(Dataset):
             exposure_col=args.exposure,
             outcome_col=args.outcome,
             iv_cols=args.instruments,
-            covariable_cols=args.covariables
+            covariable_cols=args.covariables,
+            sampling_weights_col=args.resample_weights_col
         )
 
     @classmethod
@@ -296,6 +312,13 @@ class IVDataset(Dataset):
             type=str,
         )
 
+        parser.add_argument(
+            "--resample-weights-col",
+            help="Sampling weights column if used when bootstrapping.",
+            default=None,
+            type=str
+        )
+
 
 class FullBatchDataLoader(DataLoader):
     def __init__(self, dataset: Dataset):
@@ -321,6 +344,7 @@ class IVDatasetWithGenotypes(IVDataset):
         """Dataset that also includes genotypes read using pytorch genotypes.
 
         TODO: This is not tested yet.
+        Weighted resampling is not supported.
 
         """
         if not PT_GENO_AVAIL:
@@ -402,6 +426,11 @@ class IVDatasetWithGenotypes(IVDataset):
         # Defer to parent if no genetic data provided.
         if args.genotypes_backend is None:
             return IVDataset.from_argparse_namespace(args)
+
+        if args.resample_weights_col is not None:
+            raise NotImplementedError(
+                "Resampling weights not implemented for genetic datasets."
+            )
 
         # Read genotype data.
         backend_class = BACKENDS.get(

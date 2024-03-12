@@ -18,8 +18,15 @@ from .data import Dataset, FullBatchDataLoader
 
 def resample_dataset(dataset: Dataset) -> Dataset:
     n = len(dataset)  # type: ignore
+
+    if getattr(dataset, "sampling_weights") is None:
+        weights = torch.ones(n)
+    else:
+        info("Using attached sampling weights.")
+        weights = dataset.sampling_weights
+
     bootstrap_idx = torch.multinomial(
-        torch.ones(n), n, replacement=True
+        weights, n, replacement=True
     ).tolist()
 
     class ResampledDataset(Dataset):
