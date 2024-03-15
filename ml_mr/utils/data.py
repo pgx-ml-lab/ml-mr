@@ -223,7 +223,7 @@ class IVDataset(Dataset):
     def from_json_configuration(configuration) -> "IVDataset":
         allowed_keys = {
             "filename", "sep", "exposure", "outcome", "instruments",
-            "covariables"
+            "covariables", "sampling_weights"
         }
 
         bad_keys = set(configuration.keys()) - allowed_keys
@@ -243,6 +243,7 @@ class IVDataset(Dataset):
             outcome_col=configuration["outcome"],
             iv_cols=configuration["instruments"],
             covariable_cols=configuration.get("covariables", []),
+            sampling_weights_col=configuration.get("sampling_weights", None)
         )
 
     @staticmethod
