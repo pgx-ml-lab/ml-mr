@@ -50,7 +50,9 @@ def main():
         xs = torch.linspace(*domain, 100)
 
     if args.iv_reg:
-        ate = ensemble.iv_reg_function(xs.reshape(-1, 1), reduce=False)
+        ate = ensemble.iv_reg_function(
+            xs.reshape(-1, 1), ensemble.covars, reduce=False
+        )
     else:
         ate = ensemble.ate(
             torch.tensor([[0.0]]), xs.reshape(-1, 1), reduce=False
