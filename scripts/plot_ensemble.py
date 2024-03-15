@@ -20,6 +20,7 @@ def parse_args():
     parser.add_argument("--color", default="black")
     parser.add_argument("--domain-95", action="store_true")
     parser.add_argument("--alpha", default=0.05, type=float)
+    parser.add_argument("--iv-reg", action="store_true")
 
     return parser.parse_args()
 
@@ -48,7 +49,12 @@ def main():
     else:
         xs = torch.linspace(*domain, 100)
 
-    ate = ensemble.ate(torch.tensor([[0.0]]), xs.reshape(-1, 1), reduce=False)
+    if args.iv_reg:
+        ate = ensemble.iv_reg_function(xs.reshape(-1, 1), reduce=False)
+    else:
+        ate = ensemble.ate(
+            torch.tensor([[0.0]]), xs.reshape(-1, 1), reduce=False
+        )
 
     if args.show_all:
         n_estimators = ate.shape[1]
@@ -82,7 +88,10 @@ def main():
     )
 
     plt.xlabel("X")
-    plt.ylabel("Average treatment effect (compared to X=0)")
+    if args.iv_reg:
+        plt.ylabel("IV Regression function")
+    else:
+        plt.ylabel("Average treatment effect (compared to X=0)")
 
     plt.axhline(y=1 if args.do_exp else 0, ls="-.", lw=1, color="#333333")
     if args.output.endswith(".png"):
