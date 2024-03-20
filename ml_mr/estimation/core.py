@@ -1,4 +1,4 @@
-from typing import Literal, Callable, TypeVar, Optional, Union, Type
+from typing import Literal, Callable, TypeVar, Optional, Union, Type, Iterable
 import numpy as np
 import torch
 
@@ -242,23 +242,30 @@ class EnsembleMREstimator(MREstimatorWithUncertainty):
             dim=1
         ).T.reshape(-1, 1, 3)
 
-    def iv_reg_function(
-        self,
+    @staticmethod
+    def _call_estimators(
+        estimators: Iterable[MREstimator],
+        func_name: str,
         x: torch.Tensor,
-        covars: Optional[torch.Tensor] = None,
+        covars: Optional[torch.Tensor],
         alpha: float = 0.1,
-        reduce: bool = True
-    ) -> torch.Tensor:
+        reduce: bool = True,
+    ):
         estimates = []
-        for estimator in self.estimators:
-            if isinstance(estimator, MREstimatorWithUncertainty):
-                estimates.append(
-                    estimator.iv_reg_function(x, covars)[:, 0, [1]]
-                )
-            else:
-                estimates.append(estimator.iv_reg_function(x, covars))
+        for estimator in estimators:
+            # Get the method to call.
+            func = getattr(estimator, func_name)
+            if func is None:
+                raise ValueError(func_name)
 
-        combined = torch.concat(estimates, dim=1)  # n x num_estimators
+            cur = func(x, covars)
+
+            if isinstance(estimator, MREstimatorWithUncertainty):
+                cur = cur[:, 0, [1]]
+
+            estimates.append(cur)
+
+        combined = torch.concat(estimates, dim=1)
 
         if not reduce:
             return combined
@@ -268,3 +275,26 @@ class EnsembleMREstimator(MREstimatorWithUncertainty):
             torch.tensor([alpha / 2, 0.5, 1 - alpha / 2]),
             dim=1
         ).T.reshape(-1, 1, 3)
+
+    def iv_reg_function(
+        self,
+        x: torch.Tensor,
+        covars: Optional[torch.Tensor] = None,
+        alpha: float = 0.1,
+        reduce: bool = True
+    ) -> torch.Tensor:
+        return self._call_estimators(
+            self.estimators, "iv_reg_function", x, covars, alpha, reduce
+        )
+
+    def avg_iv_reg_function(
+        self,
+        x: torch.Tensor,
+        covars: Optional[torch.Tensor] = None,
+        low_memory: bool = False,
+        alpha: float = 0.1,
+        reduce: bool = True
+    ) -> torch.Tensor:
+        return self._call_estimators(
+            self.estimators, "avg_iv_reg_function", x, covars, alpha, reduce
+        )
