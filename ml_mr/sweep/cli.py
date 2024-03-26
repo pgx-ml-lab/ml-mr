@@ -294,8 +294,20 @@ def create_sweep_database(sweep_config: SweepConfig) -> str:
     return filename
 
 
-def _fetchone_as_dict(cur: sqlite3.Cursor) -> dict:
-    return {k[0]: v for k, v in zip(cur.description, cur.fetchone())}
+def _fetchone_as_dict(cur: sqlite3.Cursor, load_blobs: bool = False) -> dict:
+    d = {k[0]: v for k, v in zip(cur.description, cur.fetchone())}
+
+    if load_blobs:
+        # Check if we need to deserialize blobs (json).
+        cur.execute(
+            "select name, type from pragma_table_info('run_parameters')"
+        )
+        blobs = [name for name, db_type in cur.fetchall() if db_type == "blob"]
+
+        for col in blobs:
+            d[col] = json.loads(d[col])
+
+    return d
 
 
 def worker(
@@ -373,7 +385,7 @@ def worker(
                 (run_id, )
             )
 
-            task = _fetchone_as_dict(cur)
+            task = _fetchone_as_dict(cur, load_blobs=True)
             del task["run_id"]
 
         finally:

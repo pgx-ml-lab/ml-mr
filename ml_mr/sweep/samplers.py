@@ -1,4 +1,5 @@
 import itertools
+import json
 
 import numpy as np
 
@@ -90,7 +91,9 @@ class ListSampler(DeterministicSampler):
         elif all([isinstance(e, str) for e in values]):
             db_type = "text"
         else:
-            raise ValueError(f"Couldn't infer db type from list '{values}'")
+            # We use blob to store JSON.
+            db_type = "blob"
+            values = [json.dumps(val) for val in values]
 
         super().__init__(db_type, len(values))
 
@@ -104,10 +107,6 @@ class ListSampler(DeterministicSampler):
 @sampler_mode("literal")
 class LiteralSampler(ListSampler):
     def __init__(self, value):
-        if type(value) not in {int, float, str, bool}:
-            raise ValueError(
-                "Literal sampler only supported for int, float, bool and str."
-            )
         super().__init__([value])
 
 
