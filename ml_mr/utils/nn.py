@@ -114,8 +114,26 @@ class MLP(pl.LightningModule):
         layers = build_mlp(input_size, hidden, out, add_input_layer_batchnorm,
                            add_hidden_layer_batchnorm, activations)
 
+        if out is not None:
+            # We split the linear representation from the rest of the model
+            # for convenience in some model formulations.
+            self.representation = nn.Sequential(*layers[:-1])
+            self.mlp = nn.Sequential(self.representation, layers[-1])
+        else:
+            self.representation = None
+            self.mlp = nn.Sequential(*layers)
+
         self.loss = loss
         self.mlp = nn.Sequential(*layers)
+
+    def get_repr(self, x: torch.Tensor) -> torch.Tensor:
+        if self.representation is None:
+            raise ValueError(
+                "No output layer specified. Can't interpret MLP as learning a "
+                "representation prior to prediction."
+            )
+
+        return self.representation(x)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.mlp(x)

@@ -20,7 +20,7 @@ from ..utils import default_validate_args, parse_project_and_run_name
 from ..utils.models import MLP, OutcomeMLPBase
 from ..utils.quantiles import QuantileLossMulti
 from ..utils.training import train_model, resample_dataset
-from ..utils.data import IVDataset, IVDatasetWithGenotypes
+from ..utils.data import IVDataset, IVDatasetWithGenotypes, FullBatchDataLoader
 from ..utils import _cat
 from .core import MREstimator
 
@@ -663,6 +663,81 @@ def save_estimator_statistics(
     plt.clf()
 
     df.to_csv(f"{output_prefix}.csv", index=False)
+
+
+def inference(estimator: QuantileIVEstimator, dataset: IVDataset):
+    """
+    import torch
+    from ml_mr.estimation.quantile_iv import QuantileIVEstimator, inference
+    from ml_mr.utils.data import IVDataset
+    import pandas as pd
+    df = pd.read_csv("../replicate_1_sim_data.csv.gz")
+    dataset = IVDataset.from_dataframe(df, exposure_col="exposure", outcome_col="outcome", iv_cols=["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10"])
+    estimator = QuantileIVEstimator.from_results("./quantile_iv_estimate/")
+    stats, h = inference(estimator, dataset)
+
+    xs = torch.linspace(-0.71, 0.71, 100).reshape(-1, 1)
+    ys = h(xs, None)
+
+    """
+
+    # H_bar matrix is the n x rep_size matrix of representations of the outcome
+    # network.
+    dl = FullBatchDataLoader(dataset)
+    x, y, ivs, covars = next(iter(dl))
+
+    x_hats = estimator.exposure_network(_cat(ivs, covars))
+    n_q = x_hats.size(1)
+    n = ivs.size(0)
+
+    # Representation at conditional quantiles
+    h_bar = None
+    for j in range(n_q):
+        cur_rep = estimator.outcome_network.get_repr(
+            _cat(x_hats[:, [j]], covars)
+        ) / n_q
+
+        if h_bar is None:
+            h_bar = cur_rep
+
+        else:
+            h_bar += cur_rep
+
+    h_bar = torch.hstack((torch.ones((n, 1)), h_bar))
+
+    # Representation at observed treatment values
+    h = torch.hstack((
+        torch.ones((n, 1)),
+        estimator.outcome_network.get_repr(_cat(x, covars))
+    ))
+
+    # Compute IV regression solutions
+    beta_hat = torch.linalg.inv(h_bar.T @ h) @ h_bar.T @ y
+
+    hbar_gram_inv = torch.linalg.inv(h_bar.T @ h_bar)
+    var_beta_hat = (
+        hbar_gram_inv @ h_bar.T @
+        torch.diag(((h @ beta_hat - y) ** 2).reshape(-1)) @
+        h_bar @ hbar_gram_inv
+    )
+
+    params = {"beta_hat": beta_hat, "beta_hat_var": var_beta_hat}
+
+    def iv_reg(x, covars):
+        # h is rep x n
+        h = estimator.outcome_network.get_repr(_cat(x, covars))
+        h = torch.hstack((torch.ones(x.size(0), 1), h)).T
+
+        iv_pred = beta_hat.T @ h  # 1 x n
+
+        # var_beta_hat is rep x rep
+        iv_pred_se = torch.sqrt(
+            torch.clip(torch.diag(h.T @ var_beta_hat @ h), min=1e-200)
+        )
+
+        return iv_pred, iv_pred_se
+
+    return params, iv_reg
 
 
 def configure_argparse(parser) -> None:
