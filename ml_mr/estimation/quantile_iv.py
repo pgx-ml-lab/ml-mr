@@ -3,6 +3,8 @@ Implementation of an IV method based on estimating quantiles of the exposure
 distribution.
 """
 
+from sklearn.decomposition import PCA
+
 import argparse
 import json
 import os
@@ -676,7 +678,7 @@ def inference(estimator: QuantileIVEstimator, dataset: IVDataset):
     estimator = QuantileIVEstimator.from_results("./quantile_iv_estimate/")
     stats, h = inference(estimator, dataset)
 
-    xs = torch.linspace(-0.71, 0.71, 100).reshape(-1, 1)
+    xs = torch.linspace(-4, 4, 100).reshape(-1, 1)
     ys = h(xs, None)
 
     """
@@ -690,7 +692,7 @@ def inference(estimator: QuantileIVEstimator, dataset: IVDataset):
     n_q = x_hats.size(1)
     n = ivs.size(0)
 
-    # Representation at conditional quantiles
+    # Representation over conditional quantiles of tx
     h_bar = None
     for j in range(n_q):
         cur_rep = estimator.outcome_network.get_repr(
@@ -703,7 +705,14 @@ def inference(estimator: QuantileIVEstimator, dataset: IVDataset):
         else:
             h_bar += cur_rep
 
-    h_bar = torch.hstack((torch.ones((n, 1)), h_bar))
+    h_bar = torch.hstack((torch.ones((n, 1)), h_bar))  # n x rep_size
+    print(h_bar.shape)
+
+    h_pca = PCA(n_components=0.99)
+    h_pca.fit(h_bar.detach().numpy())
+
+    h_bar_lowdim = torch.from_numpy(h_pca.transform(h_bar.detach().numpy()))
+    print(h_bar_lowdim.shape)
 
     # Representation at observed treatment values
     h = torch.hstack((
@@ -711,31 +720,37 @@ def inference(estimator: QuantileIVEstimator, dataset: IVDataset):
         estimator.outcome_network.get_repr(_cat(x, covars))
     ))
 
+    h_lowdim = torch.from_numpy(h_pca.transform(h.detach().numpy()))
+
     # Compute IV regression solutions
-    beta_hat = torch.linalg.inv(h_bar.T @ h) @ h_bar.T @ y
+    # beta_hat = torch.linalg.inv(h_bar.T @ h) @ h_bar.T @ y
+    beta_hat = torch.linalg.inv(h_bar_lowdim.T @ h_lowdim) @ h_bar_lowdim.T @ y
 
     hbar_gram_inv = torch.linalg.inv(h_bar.T @ h_bar)
-    var_beta_hat = (
-        hbar_gram_inv @ h_bar.T @
-        torch.diag(((h @ beta_hat - y) ** 2).reshape(-1)) @
-        h_bar @ hbar_gram_inv
-    )
+    # var_beta_hat = (
+    #     hbar_gram_inv @ h_bar.T @
+    #     torch.diag(((h @ beta_hat - y) ** 2).reshape(-1)) @
+    #     h_bar @ hbar_gram_inv
+    # )
+    var_beta_hat = None
 
     params = {"beta_hat": beta_hat, "beta_hat_var": var_beta_hat}
 
     def iv_reg(x, covars):
         # h is rep x n
         h = estimator.outcome_network.get_repr(_cat(x, covars))
-        h = torch.hstack((torch.ones(x.size(0), 1), h)).T
+        h = torch.hstack((torch.ones(x.size(0), 1), h))
 
-        iv_pred = beta_hat.T @ h  # 1 x n
+        h = torch.from_numpy(h_pca.transform(h.detach().numpy()))
+
+        iv_pred = beta_hat.T @ h.T  # 1 x n
 
         # var_beta_hat is rep x rep
-        iv_pred_se = torch.sqrt(
-            torch.clip(torch.diag(h.T @ var_beta_hat @ h), min=1e-200)
-        )
+        # iv_pred_se = torch.sqrt(
+        #     torch.clip(torch.diag(h.T @ var_beta_hat @ h), min=1e-200)
+        # )
 
-        return iv_pred, iv_pred_se
+        return iv_pred, None  # iv_pred_se
 
     return params, iv_reg
 
