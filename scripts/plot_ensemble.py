@@ -1,7 +1,9 @@
 #!/usr/bin/env python
 
+from itertools import cycle
 import argparse
 import json
+import scipy
 import os
 
 import torch
@@ -17,18 +19,42 @@ def parse_args():
     parser.add_argument("--output", "-o", default="iv_ensembles.png", type=str)
     parser.add_argument("--do-exp", action="store_true")
     parser.add_argument("--show-all", action="store_true")
-    parser.add_argument("--color", default="black")
+    parser.add_argument("--color", default=None)
     parser.add_argument("--domain-95", action="store_true")
+    parser.add_argument("--effect-unit-increase", action="store_true")
     parser.add_argument("--alpha", default=0.05, type=float)
     parser.add_argument("--iv-reg", action="store_true")
 
-    return parser.parse_args()
+    # example --given 'genetic_male=0,genetic_male=1'
+    parser.add_argument("--given", type=str, default=None)
+
+    args = parser.parse_args()
+
+    if args.effect_unit_increase and args.iv_reg:
+        raise ValueError(
+            "--iv-reg plots the raw regression function, there is no concept "
+            "of reference point."
+        )
+
+    return args
+
+
+def color_generator(num_colors=10, colormap='tab10'):
+    cmap = plt.get_cmap(colormap)
+    colors = cmap(range(num_colors))
+    color_cycle = cycle(colors)
+    while True:
+        yield next(color_cycle)
 
 
 def main():
     args = parse_args()
 
+    if args.show_all and args.given is None and args.color is None:
+        args.color = "black"
+
     estimators = []
+    covar_labels = None
 
     for dirname in args.estimates:
         try:
@@ -40,6 +66,9 @@ def main():
             print("Can't load estimator in ", dirname)
             continue
 
+        if covar_labels is None:
+            covar_labels = meta["covariable_labels"]
+
         estimators.append(MODELS[meta["model"]]["load"](dirname))
 
     ensemble = EnsembleMREstimator(*estimators)
@@ -49,57 +78,134 @@ def main():
     else:
         xs = torch.linspace(*domain, 100)
 
-    if args.iv_reg:
-        ate = ensemble.avg_iv_reg_function(
-            xs.reshape(-1, 1), ensemble.covars, reduce=False
-        )
-    else:
-        ate = ensemble.ate(
-            torch.tensor([[0.0]]), xs.reshape(-1, 1), reduce=False
-        )
+    if args.given is None:
+        # Plot ATE.
+        if args.iv_reg:
+            ate = ensemble.avg_iv_reg_function(
+                xs.reshape(-1, 1), ensemble.covars, reduce=False
+            )
+        else:
+            if args.effect_unit_increase:
+                ate = ensemble.ate(
+                    xs.reshape(-1, 1), xs.reshape(-1, 1) + 1, reduce=False
+                )
+            else:
+                ate = ensemble.ate(
+                    torch.tensor([[0.0]]), xs.reshape(-1, 1), reduce=False
+                )
+        plot(xs, ate, args.output, args.show_all, args.do_exp, args.iv_reg,
+             args.color, args.alpha, args.effect_unit_increase)
 
-    if args.show_all:
-        n_estimators = ate.shape[1]
+    else:
+        # For all CATE, plot.
+        cates = []
+        givens = parse_given(args.given)
+        if args.color is None:
+            color_gen = color_generator(len(givens))
+
+        for given in givens:
+            col, val = given
+            col_idx = covar_labels.index(col)
+
+            covars = torch.clone(ensemble.covars)
+            covars[:, col_idx] = float(val)
+
+            if args.iv_reg:
+                cur_cates = ensemble.avg_iv_reg_function(
+                    xs.reshape(-1, 1), covars=covars, reduce=False
+                )
+            else:
+                if args.effect_unit_increase:
+                    cur_cates = ensemble.cate(
+                        xs.reshape(-1, 1), xs.reshape(-1, 1) + 1,
+                        covars=covars, reduce=False
+                    )
+                else:
+                    cur_cates = ensemble.cate(
+                        torch.tensor([[0.0]]), xs.reshape(-1, 1),
+                        covars=covars, reduce=False
+                    )
+
+            plot(
+                xs, cur_cates, args.output, args.show_all, args.do_exp,
+                args.iv_reg,
+                args.color if args.color is not None else next(color_gen),
+                args.alpha, args.effect_unit_increase, label=f"{col} = {val}"
+            )
+
+            if len(givens) >= 2:
+                # cate_x by bs
+                cates.append(cur_cates)
+
+        if cates and not args.iv_reg:
+            # Compare ATEs
+            # We do ANOVA of the bagging mean ATE.
+            p = scipy.stats.f_oneway(*[
+                cates.numpy().reshape(-1) for cates in cates
+            ]).pvalue
+            print("P:", p)
+
+
+def parse_given(given):
+    return [i.strip().split("=") for i in given.split(",")]
+
+
+def plot(xs, estimates, output, show_all=False, do_exp=False, iv_reg=False,
+         color=None, alpha=0.05, effect_unit_increase=False, label=None):
+    if show_all:
+        n_estimators = estimates.shape[1]
         for j in range(n_estimators):
-            ys = ate[:, j].numpy()
-            if args.do_exp:
+            ys = estimates[:, j].numpy()
+            if do_exp:
                 ys = np.exp(ys)
 
             plt.plot(xs.numpy().reshape(-1), ys, lw=0.5, alpha=0.1,
-                     color=args.color)
+                     color=color)
 
-    ate = torch.quantile(
-        ate, torch.Tensor([args.alpha / 2, 0.5, 1 - args.alpha / 2]), dim=1
+    agg = torch.quantile(
+        estimates, torch.Tensor([alpha / 2, 0.5, 1 - alpha / 2]), dim=1
     ).T.reshape(-1, 1, 3)
 
-    if args.do_exp:
-        ate = torch.exp(ate)
+    if do_exp:
+        agg = torch.exp(agg)
 
-    ate = ate.numpy()
+    agg = agg.numpy()
 
     plt.fill_between(
         xs.numpy().reshape(-1),
-        ate[:, 0, 0],
-        ate[:, 0, 2],
+        agg[:, 0, 0],
+        agg[:, 0, 2],
         alpha=0.1
     )
     plt.plot(
         xs.numpy().reshape(-1),
-        ate[:, 0, 1],
-        color=args.color
+        agg[:, 0, 1],
+        color=color,
+        label=label,
+        lw=1,
     )
 
-    plt.xlabel("X")
-    if args.iv_reg:
+    if label:
+        plt.legend()
+
+    if effect_unit_increase:
+        plt.xlabel(r"$X_0$")
+    else:
+        plt.xlabel("X")
+
+    if iv_reg:
         plt.ylabel("IV Regression function")
+    elif effect_unit_increase:
+        plt.ylabel("Average treatment effect (X compared to X+1)")
     else:
         plt.ylabel("Average treatment effect (compared to X=0)")
 
-    plt.axhline(y=1 if args.do_exp else 0, ls="-.", lw=1, color="#333333")
-    if args.output.endswith(".png"):
-        plt.savefig(args.output, dpi=400)
+    if not iv_reg:
+        plt.axhline(y=1 if do_exp else 0, ls="-.", lw=1, color="#333333")
+    if output.endswith(".png"):
+        plt.savefig(output, dpi=400)
     else:
-        plt.savefig(args.output)
+        plt.savefig(output)
 
 
 if __name__ == "__main__":
