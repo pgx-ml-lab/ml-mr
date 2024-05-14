@@ -54,6 +54,7 @@ def main(args: argparse.Namespace) -> None:
 
     # Automatically add the model hyperparameters.
     kwargs = {k: v for k, v in vars(args).items() if k in DEFAULTS.keys()}
+    del kwargs["outcome_type"]
 
     fit_delivr(
         dataset=dataset,
@@ -132,10 +133,10 @@ def fit_delivr(
 
     meta["outcome_val_loss"] = outcome_val_loss
 
-    estimator = DeLIVREstimator.from_results(output_dir)
-
     with open(os.path.join(output_dir, "meta.json"), "wt") as f:
         json.dump(meta, f)
+
+    estimator = DeLIVREstimator.from_results(output_dir)
 
     if wandb_project is not None:
         import wandb
