@@ -33,6 +33,7 @@ DEFAULTS = {
     "learning_rate": 5e-3,
     "weight_decay": 1e-4,
     "validation_proportion": 0.2,
+    "outcome_type": "continuous",
     "accelerator": "gpu" if (
         torch.cuda.is_available() and torch.cuda.device_count() > 0
     ) else "cpu",
@@ -57,6 +58,7 @@ def main(args: argparse.Namespace) -> None:
     fit_delivr(
         dataset=dataset,
         wandb_project=args.wandb_project,
+        binary_outcome=args.outcome_type == "binary",
         **kwargs,
     )
 
@@ -279,6 +281,13 @@ class DeLIVREstimator(MREstimator):
 
 def configure_argparse(parser) -> None:
     parser.add_argument("--output-dir", default=DEFAULTS["output_dir"])
+
+    parser.add_argument(
+        "--outcome-type",
+        default=DEFAULTS["outcome_type"],
+        choices=["continuous", "binary"],
+        help="Variable type for the outcome (binary vs continuous).",
+    )
 
     MLP.add_mlp_arguments(
         parser,

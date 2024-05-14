@@ -445,8 +445,8 @@ def fit_quantile_iv(
             stage2_dataset = resample_dataset(stage2_dataset)  # type: ignore
 
     activation_str = activation
-    activation = getattr(nn, activation_str)
-    if activation is None:
+    activation_cls = getattr(nn, activation_str)
+    if activation_str is None:
         raise ValueError(
             f"Requested activation: '{activation_str}' is not a class in "
             f"torch.nn."
@@ -454,7 +454,7 @@ def fit_quantile_iv(
     else:
         # Attempt to instantiate. We don't support parametrized activations
         # with no default values, so this may fail.
-        activation = activation()
+        activation_inst = activation_cls()
 
     # Create output directory if needed.
     if not os.path.isdir(output_dir):
@@ -468,6 +468,8 @@ def fit_quantile_iv(
     meta["activation"] = activation_str  # Serialize str not class.
     del meta["dataset"]  # We don't serialize the dataset.
     del meta["stage2_dataset"]
+    del meta["activation_cls"]
+    del meta["activation_inst"]
 
     covars = dataset.save_covariables(output_dir)
 
@@ -495,7 +497,7 @@ def fit_quantile_iv(
         input_size=dataset.n_exog(),
         output_dir=output_dir,
         hidden=exposure_hidden,
-        activation=activation,
+        activation=activation_inst,
         learning_rate=exposure_learning_rate,
         weight_decay=exposure_weight_decay,
         batch_size=exposure_batch_size,
@@ -529,7 +531,7 @@ def fit_quantile_iv(
         exposure_network=exposure_network,
         output_dir=output_dir,
         hidden=outcome_hidden,
-        activation=activation,
+        activation=activation_inst,
         learning_rate=outcome_learning_rate,
         weight_decay=outcome_weight_decay,
         batch_size=outcome_batch_size,
@@ -649,8 +651,8 @@ def save_estimator_statistics(
         # Add the CI on the plot.
         plt.fill_between(
             df["x"],
-            df["y_do_x_lower"],
-            df["y_do_x_upper"],
+            df["y_do_x_lower"],  # type: ignore
+            df["y_do_x_upper"],  # type: ignore
             color="#dddddd",
             zorder=-1,
             label="Prediction interval"
