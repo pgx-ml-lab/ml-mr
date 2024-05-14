@@ -13,11 +13,15 @@ MODELS = {
     },
     "doubly_ranked": {
         "estimate": baselines.doubly_ranked.estimate,
-        "load": baselines.doubly_ranked.load,
+        "load": baselines.doubly_ranked.load
     },
     "2sls": {
         "estimate": baselines.linear_two_stage.estimate,
-        "load": baselines.linear_two_stage.load,
+        "load": baselines.linear_two_stage.load
+    },
+    "logistic_control_function": {
+        "estimate": baselines.logistic_control_function.estimate,
+        "load": baselines.logistic_control_function.load
     },
     "deep_iv": {
         "estimate": deep_iv.estimate,
