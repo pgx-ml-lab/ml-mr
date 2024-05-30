@@ -24,7 +24,7 @@ from ..logging import warn
 from .metrics import (
     mean_coverage,
     mean_prediction_interval_absolute_width,
-    mse
+    compute_metrics
 )
 from .plotting import plot_iv_reg
 
@@ -144,7 +144,7 @@ def get_estimator(estimator_path: str) -> Optional[Tuple[dict, MREstimator]]:
 
     meta["filename"] = estimator_path
 
-    return meta, loader(estimator_path)
+    return meta, loader(estimator_path)  # type: ignore
 
 
 def main():
@@ -188,7 +188,8 @@ def main():
     # Header
     if not args.no_header:
         header = [
-            "filename", "mse", "mean_pred_interval_width", "mean_coverage"
+            "filename", "mse", "correl", "linear_slope",
+            "mean_pred_interval_width", "mean_coverage"
         ]
         header.extend(args.meta_keys)
         writer.writerow(header)
@@ -240,12 +241,17 @@ def main():
             else:
                 domain_lower, domain_upper = meta["domain"]
 
-        cur_mse = mse(
-            estimator, true_function, domain=(domain_lower, domain_upper),
-            low_memory=True
+        cur_metrics = compute_metrics(
+            "all",
+            estimator, domain=(domain_lower, domain_upper),
+            low_memory=True,
+            true_function=true_function
         )
 
-        row = [meta["filename"], cur_mse]
+        row = [
+            meta["filename"], cur_metrics["mse"], cur_metrics["correlation"],
+            cur_metrics["linear_slope"]
+        ]
         if isinstance(estimator, MREstimatorWithUncertainty):
             width = mean_prediction_interval_absolute_width(
                 estimator, (domain_lower, domain_upper),
