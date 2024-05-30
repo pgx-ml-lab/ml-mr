@@ -11,10 +11,13 @@ def mse(
     true_function: Callable[[torch.Tensor], torch.Tensor],
     domain: Tuple[float, float],
     covars: Optional[torch.Tensor] = None,
+    low_memory: bool = False,
     n_points: int = 2000
 ) -> float:
     xs = torch.linspace(domain[0], domain[1], n_points).reshape(-1, 1)
-    y_hat = estimator.avg_iv_reg_function(xs, covars=covars)
+    y_hat = estimator.avg_iv_reg_function(
+        xs, covars=covars, low_memory=low_memory
+    )
 
     if isinstance(estimator, MREstimatorWithUncertainty):
         y_hat = y_hat[:, :, 1]

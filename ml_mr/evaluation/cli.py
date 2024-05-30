@@ -242,6 +242,7 @@ def main():
 
         cur_mse = mse(
             estimator, true_function, domain=(domain_lower, domain_upper),
+            low_memory=True
         )
 
         row = [meta["filename"], cur_mse]
