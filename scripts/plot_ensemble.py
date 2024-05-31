@@ -9,7 +9,7 @@ import os
 import torch
 import numpy as np
 from ml_mr.estimation import MODELS
-from ml_mr.estimation.core import EnsembleMREstimator
+from ml_mr.estimation.core import EnsembleMREstimator, RescaledMREstimator
 import matplotlib.pyplot as plt
 
 
@@ -24,6 +24,8 @@ def parse_args():
     parser.add_argument("--effect-unit-increase", action="store_true")
     parser.add_argument("--alpha", default=0.05, type=float)
     parser.add_argument("--iv-reg", action="store_true")
+    parser.add_argument("--shift", type=float, default=None)
+    parser.add_argument("--scale", type=float, default=None)
 
     # example --given 'genetic_male=0,genetic_male=1'
     parser.add_argument("--given", type=str, default=None)
@@ -78,6 +80,14 @@ def main():
     else:
         xs = torch.linspace(*domain, 100)
 
+    disp_x = xs
+
+    if args.shift or args.scale:
+        shift = args.shift if args.shift else 0
+        scale = args.scale if args.scale else 1
+        ensemble = RescaledMREstimator(ensemble, shift, scale)
+        xs = ensemble.z_to_x(xs)
+
     if args.given is None:
         # Plot ATE.
         if args.iv_reg:
@@ -93,7 +103,7 @@ def main():
                 ate = ensemble.ate(
                     torch.tensor([[0.0]]), xs.reshape(-1, 1), reduce=False
                 )
-        plot(xs, ate, args.output, args.show_all, args.do_exp, args.iv_reg,
+        plot(disp_x, ate, args.output, args.show_all, args.do_exp, args.iv_reg,
              args.color, args.alpha, args.effect_unit_increase)
 
     else:
