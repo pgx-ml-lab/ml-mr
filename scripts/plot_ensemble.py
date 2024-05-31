@@ -21,9 +21,16 @@ def parse_args():
     parser.add_argument("--show-all", action="store_true")
     parser.add_argument("--color", default=None)
     parser.add_argument("--domain-95", action="store_true")
+    parser.add_argument(
+        "--x0", "-x0",
+        help="Set the reference comparator for the ATE/CATE.",
+        type=float, default=0.0
+    )
     parser.add_argument("--effect-unit-increase", action="store_true")
     parser.add_argument("--alpha", default=0.05, type=float)
     parser.add_argument("--iv-reg", action="store_true")
+
+    # Display the X-axis in rescaled units.
     parser.add_argument("--shift", type=float, default=None)
     parser.add_argument("--scale", type=float, default=None)
 
@@ -80,13 +87,13 @@ def main():
     else:
         xs = torch.linspace(*domain, 100)
 
-    disp_x = xs
-
     if args.shift or args.scale:
         shift = args.shift if args.shift else 0
         scale = args.scale if args.scale else 1
-        ensemble = RescaledMREstimator(ensemble, shift, scale)
-        xs = ensemble.z_to_x(xs)
+        scaler = RescaledMREstimator(ensemble, shift, scale)
+
+        xs = scaler.z_to_x(xs)
+        ensemble = scaler
 
     if args.given is None:
         # Plot ATE.
@@ -101,10 +108,10 @@ def main():
                 )
             else:
                 ate = ensemble.ate(
-                    torch.tensor([[0.0]]), xs.reshape(-1, 1), reduce=False
+                    torch.tensor([[args.x0]]), xs.reshape(-1, 1), reduce=False
                 )
-        plot(disp_x, ate, args.output, args.show_all, args.do_exp, args.iv_reg,
-             args.color, args.alpha, args.effect_unit_increase)
+        plot(xs, ate, args.output, args.show_all, args.do_exp,
+             args.iv_reg, args.color, args.alpha, args.effect_unit_increase)
 
     else:
         # For all CATE, plot.
@@ -132,7 +139,7 @@ def main():
                     )
                 else:
                     cur_cates = ensemble.cate(
-                        torch.tensor([[0.0]]), xs.reshape(-1, 1),
+                        torch.tensor([[args.x0]]), xs.reshape(-1, 1),
                         covars=covars, reduce=False
                     )
 

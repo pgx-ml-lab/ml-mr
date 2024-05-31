@@ -304,25 +304,26 @@ class RescaledMREstimator(MREstimator):
     def __init__(
         self, parent: MREstimator, shift: float = 0.0, scale: float = 1.0
     ):
-        """Rescale an estimator assuming z = (x + shift) * scale.
+        """Rescale an estimator assuming z = x * scale + shift.
 
         We assume that the estimator was fit in "z" space and that the
         exposure of interest lives in "x" space.
-
-        To undo minmax scaling, we use shift=-x_min and scale=(x_max - x_min)
 
         """
         self.parent = parent
         self.shift = shift
         self.scale = scale
 
+        # Mimic properties.
+        self.covars = self.parent.covars
+
     def x_to_z(self, x):
-        # z = (x + shift) * scale
-        # x = z / scale - shift
-        return (x + self.shift) * self.scale
+        # z = x * scale + shift
+        return (x * self.scale) + self.shift
 
     def z_to_x(self, z):
-        return z / self.scale - self.shift
+        # x = (z - shift) / scale
+        return (z - self.shift) / self.scale
 
     def iv_reg_function(
         self,
@@ -335,10 +336,11 @@ class RescaledMREstimator(MREstimator):
         self,
         x: torch.Tensor,
         covars: Optional[torch.Tensor] = None,
-        low_memory: bool = False
+        low_memory: bool = False,
+        *args, **kwargs
     ) -> torch.Tensor:
         return self.parent.avg_iv_reg_function(
-            self.x_to_z(x), covars, low_memory
+            self.x_to_z(x), covars, low_memory, *args, **kwargs
         )
 
     def ate(
@@ -353,5 +355,5 @@ class RescaledMREstimator(MREstimator):
         *args, **kwargs
     ) -> torch.Tensor:
         return self.parent.cate(
-            self.x_to_z(x0), self.x_to_z(x1), *args, **kwargs
+            self.x_to_z(x0), self.x_to_z(x1), covars, *args, **kwargs
         )
