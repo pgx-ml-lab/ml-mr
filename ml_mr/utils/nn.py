@@ -111,6 +111,7 @@ class MLP(pl.LightningModule):
         if _save_hyperparams:
             self.save_hyperparameters()
 
+        hidden = list(hidden)
         layers = build_mlp(input_size, hidden, out, add_input_layer_batchnorm,
                            add_hidden_layer_batchnorm, activations)
 
@@ -120,9 +121,11 @@ class MLP(pl.LightningModule):
             self.representation: Optional[nn.Module] = nn.Sequential(
                 *layers[:-1]
             )
+            self.repr_dim: Optional[int] = hidden[-1]
             self.mlp = nn.Sequential(self.representation, layers[-1])
         else:
             self.representation = None
+            self.repr_dim = None
             self.mlp = nn.Sequential(*layers)
 
         self.loss = loss

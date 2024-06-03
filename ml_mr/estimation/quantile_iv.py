@@ -6,12 +6,13 @@ distribution.
 import argparse
 import json
 import os
-from typing import Iterable, List, Optional, Tuple, Any, Union, Type
+from typing import Iterable, List, Optional, Tuple, Any, Union, Type, Callable
 
 import matplotlib.pyplot as plt
 import pandas as pd
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, random_split
 import pytorch_lightning as pl
 
@@ -20,6 +21,7 @@ from ..utils import default_validate_args, parse_project_and_run_name
 from ..utils.models import MLP, OutcomeMLPBase
 from ..utils.quantiles import QuantileLossMulti
 from ..utils.training import train_model, resample_dataset
+from ..utils.linear import ridge_regression
 from ..utils.data import IVDataset, IVDatasetWithGenotypes
 from ..utils import _cat
 from .core import MREstimator
@@ -194,6 +196,111 @@ class ExposureNMQN(MLP):
 QIVExposureNetType = Union[ExposureNMQN, ExposureQuantileMLP]
 
 
+class OutcomeMLPLinreg(MLP):
+    def __init__(
+        self,
+        exposure_network: QIVExposureNetType,
+        input_size: int,
+        hidden: Iterable[int],
+        lr: float,
+        weight_decay: float = 0,
+        ridge_param: float = 0,
+        binary_outcome: bool = False,
+        add_input_layer_batchnorm: bool = False,
+        add_hidden_layer_batchnorm: bool = False,
+        activations: Iterable[nn.Module] = [nn.GELU()]
+    ):
+        """We mimic OutcomeMLP so that this class be used as a drop-in
+        replacement.
+
+        """
+        hidden = list(hidden)
+
+        if binary_outcome:
+            loss: Callable[[torch.Tensor, torch.Tensor], torch.Tensor] = (
+                F.binary_cross_entropy_with_logits
+            )
+        else:
+            loss = F.mse_loss
+
+        super().__init__(
+            input_size=input_size,
+            hidden=hidden,
+            out=None,
+            add_input_layer_batchnorm=add_input_layer_batchnorm,
+            add_hidden_layer_batchnorm=add_hidden_layer_batchnorm,
+            activations=activations,
+            lr=lr,
+            weight_decay=weight_decay,
+            loss=loss,
+            _save_hyperparams=False
+        )
+
+        self.exposure_network = exposure_network
+
+        self.repr_dim = hidden[-1]
+        self.linear_coefs = torch.rand(
+            (self.repr_dim + 1, 1),
+            dtype=torch.float32
+        )
+        self.save_hyperparameters(ignore=["exposure_network"])
+
+    def _add_itcpt(self, tensor: torch.Tensor) -> torch.Tensor:
+        ones = torch.ones((tensor.size(0), 1), device=self.device)  # type: ignore  # noqa: E501
+        return torch.cat((ones, tensor), dim=1)
+
+    def _step(self, batch, batch_index, log_prefix):
+        _, y, ivs, covars = batch
+
+        representation = self.forward(ivs, covars, return_representation=True)
+        # betas = ridge_regression(
+        #     representation, y, alpha=self.hparams.ridge_param,
+        #     device=self.device
+        # )
+        with torch.no_grad():
+            opt_betas = torch.linalg.lstsq(representation, y).solution
+
+        cur_betas = 0.99 * self.linear_coefs + 0.01 * opt_betas
+
+        self.linear_coefs = cur_betas
+
+        y_hat = representation @ cur_betas
+
+        loss = self.loss(y_hat, y)
+        self.log(f"outcome_{log_prefix}_loss", loss)
+
+        return loss
+
+    def x_to_y(
+        self, x: torch.Tensor, covars: Optional[torch.Tensor]
+    ) -> torch.Tensor:
+        rep = self.mlp(_cat(x, covars))
+        rep = self._add_itcpt(rep)
+        return rep @ self.linear_coefs
+
+    def forward(  # type: ignore
+        self,
+        ivs: torch.Tensor,
+        covars: Optional[torch.Tensor],
+        return_representation: bool = False
+    ):
+        x_hats = self.exposure_network(_cat(ivs, covars))
+        n_q = x_hats.size(1)
+        n = ivs.size(0)
+
+        h = torch.zeros((n, self.repr_dim), device=self.device)  # type: ignore
+        for j in range(n_q):
+            cur_h = self.mlp(_cat(x_hats[:, [j]], covars))
+            h += cur_h / n_q
+
+        h = self._add_itcpt(h)
+
+        if return_representation:
+            return h
+        else:
+            return h @ self.linear_coefs
+
+
 class OutcomeMLP(OutcomeMLPBase):
     def __init__(
         self,
@@ -279,7 +386,9 @@ class QuantileIVEstimator(MREstimator):
             map_location=torch.device("cpu")
         )
 
-        outcome_network = OutcomeMLP.load_from_checkpoint(
+        outcome_cls = OutcomeMLPLinreg if meta.get("linreg") else OutcomeMLP
+
+        outcome_network = outcome_cls.load_from_checkpoint(  # type: ignore
             os.path.join(dir_name, "outcome_network.ckpt"),
             exposure_network=exposure_network,
             map_location=torch.device("cpu")
@@ -309,6 +418,7 @@ def main(args: argparse.Namespace) -> None:
         fast=args.fast,
         wandb_project=args.wandb_project,
         nmqn=args.nmqn,
+        linreg=args.linreg,
         resample=args.resample,
         binary_outcome=args.outcome_type == "binary",
         **kwargs,
@@ -380,21 +490,27 @@ def train_outcome_model(
     max_epochs: int,
     accelerator: Optional[str] = None,
     binary_outcome: bool = False,
+    linreg: bool = False,
     wandb_project: Optional[str] = None
 ) -> Tuple[Any, float]:
     info("Training outcome model.")
     n_covars = train_dataset[0][3].numel()
 
-    model = OutcomeMLP(
-        exposure_network=exposure_network,
-        input_size=1 + n_covars,
-        lr=learning_rate,
-        weight_decay=weight_decay,
-        hidden=hidden,
-        add_input_layer_batchnorm=add_input_batchnorm,
-        binary_outcome=binary_outcome,
-        activations=[activation],
-    )
+    model_kwargs = {
+        "exposure_network": exposure_network,
+        "input_size": 1 + n_covars,
+        "lr": learning_rate,
+        "weight_decay": weight_decay,
+        "hidden": hidden,
+        "add_input_layer_batchnorm": add_input_batchnorm,
+        "binary_outcome": binary_outcome,
+        "activations": [activation],
+    }
+
+    if linreg:
+        model = OutcomeMLPLinreg(**model_kwargs)
+    else:
+        model = OutcomeMLP(**model_kwargs)
 
     info(f"Loss: {model.loss}")
 
@@ -409,6 +525,7 @@ def train_outcome_model(
         max_epochs=max_epochs,
         accelerator=accelerator,
         wandb_project=wandb_project,
+        early_stopping_patience=200 if linreg else 20
     )
 
 
@@ -423,6 +540,7 @@ def fit_quantile_iv(
     resample: bool = False,
     nmqn: bool = False,
     nmqn_penalty_lambda: Optional[float] = DEFAULTS["nmqn_penalty_lambda"],  # type: ignore # noqa: E501
+    linreg: bool = False,  # type: ignore
     exposure_hidden: List[int] = DEFAULTS["exposure_hidden"],  # type: ignore
     exposure_learning_rate: float = DEFAULTS["exposure_learning_rate"],  # type: ignore # noqa: E501
     exposure_weight_decay: float = DEFAULTS["exposure_weight_decay"],  # type: ignore # noqa: E501
@@ -539,6 +657,7 @@ def fit_quantile_iv(
         max_epochs=outcome_max_epochs,
         accelerator=accelerator,
         binary_outcome=binary_outcome,
+        linreg=linreg,
         wandb_project=wandb_project
     )
 
@@ -718,6 +837,13 @@ def configure_argparse(parser) -> None:
     parser.add_argument(
         "--resample",
         help="Resample with replacement to do bootstrapping.",
+        action="store_true"
+    )
+
+    parser.add_argument(
+        "--linreg",
+        help="Learn a representation on top of which linear regression is "
+             "used to predict the outcome.",
         action="store_true"
     )
 
