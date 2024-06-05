@@ -1,12 +1,7 @@
+from . import baselines, deep_iv, delivr, dfiv, quantile_iv
+from .core import (MREstimator, MREstimatorWithUncertainty,
+                   RescaledMREstimator, load_estimator)
 from .ensemble import EnsembleMREstimator
-
-from .core import MREstimator, MREstimatorWithUncertainty, load_estimator
-
-from . import deep_iv
-from . import quantile_iv
-from . import baselines
-from . import dfiv
-from . import delivr
 
 MODELS = {
     "quantile_iv": {
