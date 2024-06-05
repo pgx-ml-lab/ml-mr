@@ -426,7 +426,7 @@ class QuantileIVLinearEstimator(MREstimatorWithUncertainty):
             se_h_hat = torch.sqrt(
                 torch.clip(
                     torch.diag(eta_pca @ var_beta_IV_hat @ eta_pca.T), 1e-200
-                    )
+                )
             )
             h_hat = h_hat.squeeze().reshape(-1, 1)
             se_h_hat = se_h_hat.squeeze().reshape(-1, 1)
