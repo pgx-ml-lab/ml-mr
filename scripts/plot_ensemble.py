@@ -9,7 +9,8 @@ import os
 import torch
 import numpy as np
 from ml_mr.estimation import MODELS
-from ml_mr.estimation.core import EnsembleMREstimator, RescaledMREstimator
+from ml_mr.estimation.ensemble import EnsembleMREstimator
+from ml_mr.estimation.core import RescaledMREstimator
 import matplotlib.pyplot as plt
 
 
