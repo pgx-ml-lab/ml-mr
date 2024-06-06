@@ -17,8 +17,10 @@ from typing import Tuple, Optional
 import numpy as np
 import torch
 
+from ..estimation.ensemble import EnsembleMREstimator
+
 from ..estimation import (
-    MODELS, MREstimatorWithUncertainty, MREstimator, EnsembleMREstimator
+    MODELS, MREstimatorWithUncertainty, MREstimator
 )
 from ..logging import warn
 from .metrics import (
