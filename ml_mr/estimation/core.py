@@ -75,7 +75,7 @@ class MREstimator(object):
                 covars = self.covars
 
         if low_memory:
-            return self._low_mem_avg_iv_reg_function(x)
+            return self._low_mem_avg_iv_reg_function(x, covars)
 
         n_covars = covars.shape[0]
         x_rep = torch.repeat_interleave(x, n_covars, dim=0)
@@ -88,14 +88,17 @@ class MREstimator(object):
             for tens in torch.split(y_hats, n_covars)
         ])
 
-    def _low_mem_avg_iv_reg_function(self, x: torch.Tensor) -> torch.Tensor:
+    def _low_mem_avg_iv_reg_function(
+        self,
+        x: torch.Tensor,
+        covars: torch.Tensor
+    ) -> torch.Tensor:
         avgs = []
-        assert self.covars is not None
-        num_covars = self.covars.shape[0]
+        num_covars = covars.shape[0]
         for cur_x in x:
             cur_cf = torch.mean(self.iv_reg_function(
                 cur_x.repeat(num_covars).reshape(num_covars, -1),
-                self.covars
+                covars
             ), dim=0, keepdim=True)
             avgs.append(cur_cf)
 
