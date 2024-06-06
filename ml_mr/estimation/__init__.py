@@ -3,6 +3,7 @@ from .core import (MREstimator, MREstimatorWithUncertainty,
                    RescaledMREstimator, load_estimator)
 from .ensemble import EnsembleMREstimator
 
+
 MODELS = {
     "quantile_iv": {
         "estimate": quantile_iv.estimate,
