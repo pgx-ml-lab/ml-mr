@@ -15,7 +15,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, random_split
 import pytorch_lightning as pl
 from sklearn.decomposition import PCA
-from scipy.stats import stats
+from scipy import stats
 
 from ..logging import info
 from ..utils import default_validate_args, parse_project_and_run_name
@@ -329,10 +329,10 @@ class QuantileIVLinearEstimator(MREstimatorWithUncertainty):
             self,
             x: torch.Tensor,
             covars: Optional[torch.Tensor] = None,
-            low_memory: bool = True,
+            low_memory: bool = False,
             alpha: float = 0.1
     ) -> torch.Tensor:
-        return super().avg_iv_reg_function(x, covars, low_memory, alpha)
+        return super().avg_iv_reg_function(x, covars)
 
     def init_PCA(self, n_components: float = 0.999, random_state: int = 42):
         pca = PCA(n_components=n_components, random_state=random_state)
@@ -349,6 +349,8 @@ class QuantileIVLinearEstimator(MREstimatorWithUncertainty):
     ) -> Callable[[torch.Tensor, Optional[torch.Tensor]], torch.Tensor]:
         x, y, ivs, covars = self.read_ivdataset(dataset)
 
+        covars = covars.unsqueeze(-1)
+        
         x_hats = self.exposure_network(_cat(ivs, covars))
         n_quantiles = x_hats.size(1)
         n = x.size(0)
@@ -357,7 +359,7 @@ class QuantileIVLinearEstimator(MREstimatorWithUncertainty):
         # Loop through all quantiles
         # Equivalent to the 1/K sum step in equation (6)
         for j in range(n_quantiles):
-            current_representation = self.outcome_network.get_representation(
+            current_representation = self.outcome_network.get_repr(
                 _cat(x_hats[:, [j]], covars)
             ) / (n_quantiles)
 
@@ -377,7 +379,7 @@ class QuantileIVLinearEstimator(MREstimatorWithUncertainty):
         eta_bar_pca = torch.hstack((torch.ones((n, 1)), eta_bar_pca))
 
         # Get the representation of the exposure x 
-        H = self.outcome_network.get_representation(
+        H = self.outcome_network.get_repr(
             _cat(x, covars)
         )
         # Apply PCA to the representation of the exposure x
@@ -406,18 +408,20 @@ class QuantileIVLinearEstimator(MREstimatorWithUncertainty):
 
         # Estimated h_hat function
         def iv_reg(x, covars):
-            eta = self.outcome_network.get_representation(
+            eta = self.outcome_network.get_repr(
                 _cat(x, covars)
             )
             eta_pca = torch.from_numpy(
                 self.pca.transform(eta.detach().numpy())
             )
+            """
             # If we have covariables, we marginalize over the covariates
             if covars is not None:
                 eta_pca = torch.vstack([
                     tens.mean(dim=0, keepdim=True)
                     for tens in torch.split(eta_pca, covars.shape[0])
                 ])
+            """
             # Add intercept column
             eta_pca = torch.hstack((torch.ones((eta_pca.size(0), 1)), eta_pca))
 
