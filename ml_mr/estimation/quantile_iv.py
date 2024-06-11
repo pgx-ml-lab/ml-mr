@@ -25,6 +25,7 @@ from ..utils.training import train_model, resample_dataset
 from ..utils.data import IVDataset, IVDatasetWithGenotypes, FullBatchDataLoader
 from ..utils import _cat
 from .core import MREstimator, MREstimatorWithUncertainty
+import inspect
 
 # Default values definitions.
 # fmt: off
@@ -304,150 +305,242 @@ class QuantileIVLinearEstimator(MREstimatorWithUncertainty):
         parent: QuantileIVEstimator
     ):
         self.parent = parent
-        self.exposure_network = parent.exposure_network
-        self.outcome_network = parent.outcome_network
+
+        # Necessary to work with parent functions that use self.covars
         self.covars = parent.covars
-        self.pca = self.init_PCA()
+
+        # dataset is needed to access y, might be a better way of doing it
         self.dataset = dataset
-        self.h = self.linear_inference(dataset)
+
+        pca = PCA(n_components=0.999, random_state=42)
+        dl = FullBatchDataLoader(dataset)
+        X, Y, ivs, covars = next(iter(dl))
+
+        covars = covars.unsqueeze(-1)
+
+        eta_bar = self.__construct_eta_bar(covars, ivs)
+        H = self.__construct_H(X, covars)
+
+        self.pca = self.__fit_PCA(pca, eta_bar)
+
+        eta_bar_pca = self.__apply_PCA(eta_bar, self.pca)
+        H_pca = self.__apply_PCA(H, self.pca)
+
+        self.__eta_bar_pca = self.__add_intercept_col(eta_bar_pca)
+        self.__H_pca = self.__add_intercept_col(H_pca)
+
+        self.__betas = self.__compute_IV_betas(
+            self.__H_pca,
+            self.__eta_bar_pca,
+            Y
+        )
+
+        self.__betas_variance = self.__compute_IV_betas_variance(
+            self.__H_pca,
+            self.__eta_bar_pca,
+            Y,
+            self.__betas
+        )
+
+        # h returns the iv regression function and associated standard error
+        self.h = self.__iv_reg
 
     def iv_reg_function(
         self,
         x: torch.Tensor,
         covars: Optional[torch.Tensor] = None,
-        alpha: float = 0.1
+        alpha: float = 0.05
     ):
         ys, se_ys = self.h(x, covars)
         lower_ci = ys + stats.norm.ppf(alpha/2) * se_ys
         upper_ci = ys + stats.norm.ppf(1-alpha/2) * se_ys
 
         return torch.hstack([lower_ci, ys, upper_ci]).view(
-            len(ys), 1, 3
+            -1, 1, 3
         )
 
     def avg_iv_reg_function(
-            self,
-            x: torch.Tensor,
-            covars: Optional[torch.Tensor] = None,
-            low_memory: bool = False,
-            alpha: float = 0.1
-    ) -> torch.Tensor:
-        return super().avg_iv_reg_function(x, covars)
-
-    def init_PCA(self, n_components: float = 0.999, random_state: int = 42):
-        pca = PCA(n_components=n_components, random_state=random_state)
-        return pca
-
-    def read_ivdataset(self, dataset: IVDataset) -> Tuple:
-        dl = FullBatchDataLoader(dataset)
-        x, y, ivs, covars = next(iter(dl))
-        return x, y, ivs, covars
-
-    def linear_inference(
         self,
-        dataset: IVDataset
-    ) -> Callable[[torch.Tensor, Optional[torch.Tensor]], torch.Tensor]:
-        x, y, ivs, covars = self.read_ivdataset(dataset)
+        x: torch.Tensor,
+        covars: Optional[torch.Tensor] = None,
+        low_memory: bool = True,
+        alpha: float = 0.05
+    ) -> torch.Tensor:
+        if covars is None:
+            if self.covars is None:
+                return self.iv_reg_function(x, None)
+            else:
+                covars = self.covars
+        y_hats = super().avg_iv_reg_function(
+            x=x, covars=covars, low_memory=low_memory)
+        y_hat = y_hats[:, :, 1]
+        avg_h_var = self.__compute_avg_h_variance(x, covars)
+        avg_h_var = torch.clip(
+            torch.diag(avg_h_var), 1e-200
+        ).squeeze().reshape(-1, 1)
 
-        covars = covars.unsqueeze(-1)
-        
-        x_hats = self.exposure_network(_cat(ivs, covars))
+        if (inspect.stack()[1].function == "ate"
+            or inspect.stack()[1].function == "cate"):
+            return torch.hstack([y_hat, avg_h_var]).view(-1, 1, 2)
+        else:
+            avg_h_sd = torch.sqrt(avg_h_var)
+            y_hats[:, :, 0] = y_hat + stats.norm.ppf(alpha/2) * avg_h_sd
+            y_hats[:, :, 2] = y_hat + stats.norm.ppf(1 - alpha/2) * avg_h_sd
+
+            return y_hats
+
+    def __low_mem_avg_repr(
+        self,
+        x: torch.Tensor,
+        covars: torch.Tensor
+    ) -> torch.Tensor:
+        avgs = []
+        num_covars = covars.shape[0]
+        for cur_x in x:
+            cur_cf = torch.mean(self.parent.outcome_network.get_repr(
+                _cat(
+                    cur_x.repeat(num_covars).reshape(num_covars, -1),
+                    covars
+                )
+            ), dim=0, keepdim=True)
+            avgs.append(cur_cf)
+
+        return torch.vstack(avgs)
+
+    def __construct_eta_bar(self, covars: torch.Tensor, ivs: torch.Tensor):
+        x_hats = self.parent.exposure_network(_cat(ivs, covars))
         n_quantiles = x_hats.size(1)
-        n = x.size(0)
 
-        eta_bar = None
+        eta_bar = 0
+        avg_eta_bar = 0
         # Loop through all quantiles
         # Equivalent to the 1/K sum step in equation (6)
         for j in range(n_quantiles):
-            current_representation = self.outcome_network.get_repr(
+            current_representation = self.parent.outcome_network.get_repr(
                 _cat(x_hats[:, [j]], covars)
             ) / (n_quantiles)
 
-            if eta_bar is None:
-                eta_bar = current_representation
-            else:
-                eta_bar += current_representation
+            """
+            avg_current_representation = self.__low_mem_avg_repr(
+                x_hats[:, [j]], covars
+                ) / (n_quantiles)
+            """
 
-        assert eta_bar is not None
+            eta_bar += current_representation
+            # avg_eta_bar += avg_current_representation
+        return eta_bar  # , avg_eta_bar
 
-        # Fit PCA
-        self.pca.fit(eta_bar.detach().numpy())
-        eta_bar_pca = torch.from_numpy(
-            self.pca.transform(eta_bar.detach().numpy())
+    def __construct_H(self, X: torch.Tensor, covars: torch.Tensor):
+        # Get the representation of the exposure x
+        H = self.parent.outcome_network.get_repr(
+            _cat(X, covars)
         )
-        # Add intercept column
-        eta_bar_pca = torch.hstack((torch.ones((n, 1)), eta_bar_pca))
+        # avg_H = self.__low_mem_avg_repr(X, covars)
 
-        # Get the representation of the exposure x 
-        H = self.outcome_network.get_repr(
+        return H    # , avg_H
+
+    def __compute_IV_betas(
+        self,
+        X: torch.Tensor,
+        Z: torch.Tensor,
+        Y: torch.Tensor
+    ):
+        beta_IV_hat = torch.linalg.lstsq(
+            Z.T @ X, torch.eye(Z.size(1))
+            ).solution @ Z.T @ Y
+
+        return beta_IV_hat
+
+    def __compute_IV_betas_variance(
+        self,
+        X: torch.Tensor,
+        Z: torch.Tensor,
+        Y: torch.Tensor,
+        betas: torch.Tensor
+    ):
+        # We compute the variance of the coefficients beta_IV_hat
+        ZTX_inv = torch.linalg.lstsq(Z.T @ X, torch.eye(Z.size(1))).solution
+        diag = torch.diag(((X @ betas - Y) ** 2).reshape(-1))
+        var_beta_IV_hat = (
+            ZTX_inv
+            @ Z.T
+            @ diag
+            @ Z
+            @ ZTX_inv
+        )
+
+        return var_beta_IV_hat
+
+    def __compute_avg_h_variance(
+        self,
+        X: torch.Tensor,
+        covars: torch.Tensor
+    ):
+        avg_eta = self.__low_mem_avg_repr(X, covars)
+        avg_eta_pca = self.__apply_PCA(avg_eta, self.pca)
+        avg_eta_pca = self.__add_intercept_col(avg_eta_pca)
+        return avg_eta_pca @ self.__betas_variance @ avg_eta_pca.T
+
+    def __fit_PCA(self, pca: PCA, to_fit: torch.Tensor):
+        if to_fit.requires_grad:
+            to_fit = to_fit.detach()
+        return pca.fit(to_fit.numpy())
+
+    def __apply_PCA(self, x: torch.Tensor, pca: PCA):
+        x_pca = torch.from_numpy(
+            pca.transform(x.detach().numpy())
+        )
+        return x_pca
+
+    def __add_intercept_col(self, x):
+        return torch.hstack((torch.ones((x.size(0), 1)), x))
+
+    # Estimated h_hat function
+    def __iv_reg(self, x, covars):
+        betas = self.__betas
+        betas_var = self.__betas_variance
+
+        eta = self.parent.outcome_network.get_repr(
             _cat(x, covars)
         )
-        # Apply PCA to the representation of the exposure x
-        H_pca = torch.from_numpy(
-            self.pca.transform(H.detach().numpy())
+
+        eta_pca = self.__apply_PCA(eta, self.pca)
+        eta_pca = self.__add_intercept_col(eta_pca)
+
+        # IV regression using the estimated beta_IV_hat
+        h_hat = betas.T @ eta_pca.T
+        se_h_hat = torch.sqrt(
+            torch.clip(
+                torch.diag(eta_pca @ betas_var @ eta_pca.T), 1e-200
+            )
         )
+        h_hat = h_hat.squeeze().reshape(-1, 1)
+        se_h_hat = se_h_hat.squeeze().reshape(-1, 1)
 
-        # Add intercept column
-        H_pca = torch.hstack((torch.ones((n, 1)), H_pca))
-
-        # We now compute the IV regression
-        beta_IV_hat = torch.linalg.inv(
-            eta_bar_pca.T @ H_pca) @ eta_bar_pca.T @ y
-
-        # We compute the variance of the coefficients beta_IV_hat
-        mat_etabar_H_inv = torch.linalg.inv(eta_bar_pca.T @ H_pca)
-        mat_etabar = eta_bar_pca
-        mat_diag = torch.diag(((H_pca @ beta_IV_hat - y) ** 2).reshape(-1))
-        var_beta_IV_hat = (
-            mat_etabar_H_inv
-            @ mat_etabar.T
-            @ mat_diag
-            @ mat_etabar
-            @ mat_etabar_H_inv
-        )
-
-        # Estimated h_hat function
-        def iv_reg(x, covars):
-            eta = self.outcome_network.get_repr(
-                _cat(x, covars)
-            )
-            eta_pca = torch.from_numpy(
-                self.pca.transform(eta.detach().numpy())
-            )
-            """
-            # If we have covariables, we marginalize over the covariates
-            if covars is not None:
-                eta_pca = torch.vstack([
-                    tens.mean(dim=0, keepdim=True)
-                    for tens in torch.split(eta_pca, covars.shape[0])
-                ])
-            """
-            # Add intercept column
-            eta_pca = torch.hstack((torch.ones((eta_pca.size(0), 1)), eta_pca))
-
-            # IV regression using the estimated beta_IV_hat
-            h_hat = beta_IV_hat.T @ eta_pca.T
-            se_h_hat = torch.sqrt(
-                torch.clip(
-                    torch.diag(eta_pca @ var_beta_IV_hat @ eta_pca.T), 1e-200
-                )
-            )
-            h_hat = h_hat.squeeze().reshape(-1, 1)
-            se_h_hat = se_h_hat.squeeze().reshape(-1, 1)
-
-            return h_hat, se_h_hat
-
-        return iv_reg
+        return h_hat, se_h_hat
 
     def ate(
         self,
         x0: torch.Tensor,
         x1: torch.Tensor
     ) -> torch.Tensor:
-        y1 = self.avg_iv_reg_function(x1)
-        y0 = self.avg_iv_reg_function(x0)
+        y1_ci = self.avg_iv_reg_function(x1)
+        y0_ci = self.avg_iv_reg_function(x0)
 
-        return y1 - y0
+        y1 = y1_ci[:, :, 0]
+        y0 = y0_ci[:, :, 0]
+
+        var1 = y1_ci[:, :, 1]
+        var2 = y0_ci[:, :, 1]
+
+        ate = y1 - y0
+
+        lower_ci = ate + stats.norm.ppf(0.05/2) * torch.sqrt(var1 + var2)
+        upper_ci = ate + stats.norm.ppf(1 - 0.05/2) * torch.sqrt(var1 + var2)
+
+        return torch.hstack([lower_ci, ate, upper_ci]).view(
+            -1, 1, 3
+        )
 
     def cate(
         self,
@@ -455,10 +548,24 @@ class QuantileIVLinearEstimator(MREstimatorWithUncertainty):
         x1: torch.Tensor,
         covars: torch.Tensor
     ) -> torch.Tensor:
-        y1 = self.avg_iv_reg_function(x1, covars)
-        y0 = self.avg_iv_reg_function(x0, covars)
+        y1_ci = self.avg_iv_reg_function(x1, covars)
+        y0_ci = self.avg_iv_reg_function(x0, covars)
 
-        return y1 - y0
+        y1 = y1_ci[:, :, 0]
+        y0 = y0_ci[:, :, 0]
+
+        var1 = y1_ci[:, :, 1]
+        var2 = y0_ci[:, :, 1]
+
+        ate = y1 - y0
+
+        lower_ci = ate + stats.norm.ppf(0.05/2) * torch.sqrt(var1 + var2)
+        upper_ci = ate + stats.norm.ppf(1 - 0.05/2) * torch.sqrt(var1 + var2)
+
+        return torch.hstack([lower_ci, ate, upper_ci]).view(
+            -1, 1, 3
+        )
+
 
 
 def main(args: argparse.Namespace) -> None:
