@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader, Dataset, random_split
 import pytorch_lightning as pl
 from sklearn.decomposition import PCA
 from scipy import stats
+import pickle as pk
 
 from ..logging import info
 from ..utils import default_validate_args, parse_project_and_run_name
@@ -26,6 +27,8 @@ from ..utils.data import IVDataset, IVDatasetWithGenotypes, FullBatchDataLoader
 from ..utils import _cat
 from .core import MREstimator, MREstimatorWithUncertainty
 import inspect
+import uuid
+import glob
 
 # Default values definitions.
 # fmt: off
@@ -263,7 +266,7 @@ class QuantileIVEstimator(MREstimator):
             return self.outcome_network.x_to_y(x, covars)
 
     @classmethod
-    def from_results(cls, dir_name: str) -> "QuantileIVEstimator":
+    def from_results(self, dir_name: str) -> "QuantileIVEstimator":
         with open(os.path.join(dir_name, "meta.json"), "rt") as f:
             meta = json.load(f)
 
@@ -272,12 +275,12 @@ class QuantileIVEstimator(MREstimator):
         except FileNotFoundError:
             covars = None
 
-        exposure_net_cls: Type[pl.LightningModule] = (
+        exposure_net_self: Type[pl.LightningModule] = (
             ExposureNMQN if meta.get("nmqn", False)
             else ExposureQuantileMLP
         )
 
-        exposure_network = exposure_net_cls.load_from_checkpoint(
+        exposure_network = exposure_net_self.load_from_checkpoint(
             os.path.join(dir_name, "exposure_network.ckpt"),
             map_location=torch.device("cpu")
         )
@@ -290,7 +293,7 @@ class QuantileIVEstimator(MREstimator):
 
         outcome_network.eval()  # type: ignore
 
-        return cls(exposure_network, outcome_network, meta=meta, covars=covars)
+        return self(exposure_network, outcome_network, meta=meta, covars=covars)
 
 
 class QuantileIVLinearEstimator(MREstimatorWithUncertainty):
@@ -301,49 +304,126 @@ class QuantileIVLinearEstimator(MREstimatorWithUncertainty):
     """
     def __init__(
         self,
-        dataset: IVDataset,
-        parent: QuantileIVEstimator
+        estimator_path: str
     ):
-        self.parent = parent
+        subdirs = ["parents", "pcas", "betas", "betas_variance"]
 
-        # Necessary to work with parent functions that use self.covars
-        self.covars = parent.covars
+        estimator_path_split = estimator_path.split(os.sep)
+        estimator_path_split[-2] = subdirs[0]
+        parent_estimator_path = os.sep.join(estimator_path_split)
+        parent_estimator = os.readlink(parent_estimator_path)
+        self.estimator = QuantileIVEstimator.from_results(parent_estimator)
 
-        # dataset is needed to access y, might be a better way of doing it
-        self.dataset = dataset
+        estimator_path_split = estimator_path.split(os.sep)
+        estimator_path_split[-2] = subdirs[1]
+        parent_pca = os.sep.join(estimator_path_split)
+        self.pca = pk.load(open(parent_pca, "rb"))
 
-        pca = PCA(n_components=0.999, random_state=42)
-        dl = FullBatchDataLoader(dataset)
-        X, Y, ivs, covars = next(iter(dl))
+        estimator_path_split = estimator_path.split(os.sep)
+        estimator_path_split[-2] = subdirs[2]
+        parent_betas = os.sep.join(estimator_path_split)
+        self.betas = torch.load(parent_betas)
 
-        covars = covars.unsqueeze(-1)
+        estimator_path_split = estimator_path.split(os.sep)
+        estimator_path_split[-2] = subdirs[3]
+        parent_betas_variance = os.sep.join(estimator_path_split)
+        self.betas_variance = torch.load(parent_betas_variance)
 
-        eta_bar = self.__construct_eta_bar(covars, ivs)
-        H = self.__construct_H(X, covars)
-
-        self.pca = self.__fit_PCA(pca, eta_bar)
-
-        eta_bar_pca = self.__apply_PCA(eta_bar, self.pca)
-        H_pca = self.__apply_PCA(H, self.pca)
-
-        self.__eta_bar_pca = self.__add_intercept_col(eta_bar_pca)
-        self.__H_pca = self.__add_intercept_col(H_pca)
-
-        self.__betas = self.__compute_IV_betas(
-            self.__H_pca,
-            self.__eta_bar_pca,
-            Y
-        )
-
-        self.__betas_variance = self.__compute_IV_betas_variance(
-            self.__H_pca,
-            self.__eta_bar_pca,
-            Y,
-            self.__betas
-        )
-
-        # h returns the iv regression function and associated standard error
         self.h = self.__iv_reg
+
+    @classmethod
+    def create_instances(cls, estimator_path: str):
+        if not os.path.isdir(estimator_path):
+            raise ValueError("Path provided in not a directory")
+        subdirs = ["parents", "pcas", "betas", "betas_variance"]
+
+        path = os.path.join(estimator_path, subdirs[0])
+        ids = [
+            os.path.basename(s) for s in glob.glob(f"{path}/*")
+            ]
+        if len(ids) == 0:
+            raise ValueError("Directory provided is empty")
+
+        QIVLinList = []
+        for id in ids:
+            e = os.path.join(estimator_path, f"{subdirs[0]}/{id}")
+            print(e)
+            QIVLinList.append(QuantileIVLinearEstimator(e))
+        return QIVLinList
+
+    @classmethod
+    def fit_and_save(
+        cls,
+        dataset: IVDataset,
+        qiv_estimator_path: List[str],
+        output_dir: str
+    ):
+        if os.path.exists(output_dir):
+            raise ValueError("Output directory already exists.")
+        os.mkdir(output_dir)
+        parents_folder = os.path.join(output_dir, "parents")
+        betas_folder = os.path.join(output_dir, "betas")
+        betas_variance_folder = os.path.join(output_dir, "betas_variance")
+        pca_folder = os.path.join(output_dir, "pcas")
+
+        os.mkdir(parents_folder)
+        os.mkdir(betas_folder)
+        os.mkdir(betas_variance_folder)
+        os.mkdir(pca_folder)
+
+        for e in qiv_estimator_path:
+            id = cls.__get_id()
+            symlink_file = os.path.join(parents_folder, id)
+
+            while os.path.exists(symlink_file):
+                id = cls.__get_id()
+                symlink_file = os.path.join(parents_folder, id)
+
+            os.symlink(e, symlink_file)
+
+            pca = PCA(n_components=0.999, random_state=42)
+            dl = FullBatchDataLoader(dataset)
+            X, Y, ivs, covars = next(iter(dl))
+
+            estimator = QuantileIVEstimator.from_results(
+                e
+            )
+
+            eta_bar = cls.__construct_eta_bar(estimator, covars, ivs)
+            H = cls.__construct_H(estimator, X, covars)
+
+            pca = cls.__fit_PCA(pca, eta_bar)
+
+            eta_bar_pca = cls.__apply_PCA(eta_bar, pca)
+            H_pca = cls.__apply_PCA(H, pca)
+
+            eta_bar_pca = cls.__add_intercept_col(eta_bar_pca)
+            H_pca = cls.__add_intercept_col(H_pca)
+
+            betas = cls.__compute_IV_betas(
+                H_pca,
+                eta_bar_pca,
+                Y
+            )
+
+            betas_variance = cls.__compute_IV_betas_variance(
+                H_pca,
+                eta_bar_pca,
+                Y,
+                betas
+            )
+
+            output_dir_pca = os.path.join(pca_folder, id)
+            output_dir_qivlinear_betas = os.path.join(betas_folder, id)
+            output_dir_qivlinear_betas_variance = os.path.join(
+                betas_variance_folder, id
+            )
+
+            with open(output_dir_pca, "wb") as f:
+                pk.dump(pca, f)
+
+            torch.save(betas, output_dir_qivlinear_betas)
+            torch.save(betas_variance, output_dir_qivlinear_betas_variance)
 
     def iv_reg_function(
         self,
@@ -374,73 +454,106 @@ class QuantileIVLinearEstimator(MREstimatorWithUncertainty):
         y_hats = super().avg_iv_reg_function(
             x=x, covars=covars, low_memory=low_memory)
         y_hat = y_hats[:, :, 1]
-        avg_h_var = self.__compute_avg_h_variance(x, covars)
+        avg_h_var = self.compute_avg_h_variance(
+            x,
+            covars
+        )
         avg_h_var = torch.clip(
             torch.diag(avg_h_var), 1e-200
         ).squeeze().reshape(-1, 1)
 
-        if (inspect.stack()[1].function == "ate"
-            or inspect.stack()[1].function == "cate"):
-            return torch.hstack([y_hat, avg_h_var]).view(-1, 1, 2)
-        else:
-            avg_h_sd = torch.sqrt(avg_h_var)
-            y_hats[:, :, 0] = y_hat + stats.norm.ppf(alpha/2) * avg_h_sd
-            y_hats[:, :, 2] = y_hat + stats.norm.ppf(1 - alpha/2) * avg_h_sd
+        avg_h_sd = torch.sqrt(avg_h_var)
+        y_hats[:, :, 0] = y_hat + stats.norm.ppf(alpha/2) * avg_h_sd
+        y_hats[:, :, 2] = y_hat + stats.norm.ppf(1 - alpha/2) * avg_h_sd
 
-            return y_hats
+        return y_hats
 
+    @staticmethod
     def __low_mem_avg_repr(
-        self,
+        estimator: QuantileIVEstimator,
         x: torch.Tensor,
         covars: torch.Tensor
     ) -> torch.Tensor:
         avgs = []
         num_covars = covars.shape[0]
         for cur_x in x:
-            cur_cf = torch.mean(self.parent.outcome_network.get_repr(
-                _cat(
-                    cur_x.repeat(num_covars).reshape(num_covars, -1),
-                    covars
-                )
+            cur_x_rep = cur_x.repeat(num_covars).reshape(num_covars, -1)
+            cur_cf = torch.mean(estimator.outcome_network.get_repr(
+                _cat(cur_x_rep, covars)
             ), dim=0, keepdim=True)
             avgs.append(cur_cf)
-
         return torch.vstack(avgs)
 
-    def __construct_eta_bar(self, covars: torch.Tensor, ivs: torch.Tensor):
-        x_hats = self.parent.exposure_network(_cat(ivs, covars))
+    def compute_avg_h_variance(
+        self,
+        X: torch.Tensor,
+        covars: torch.Tensor
+    ):
+        print(X.shape)
+        print(covars.shape)
+        avg_eta = self.__low_mem_avg_repr(self.estimator, X, covars)
+        avg_eta_pca = self.__apply_PCA(avg_eta, self.pca)
+        avg_eta_pca = self.__add_intercept_col(avg_eta_pca)
+        return avg_eta_pca @ self.betas_variance @ avg_eta_pca.T
+
+    def compute_avg_cate_variance(
+        self,
+        x0: torch.Tensor,
+        x1: torch.Tensor,
+        covars: torch.Tensor
+    ):
+        avg_eta_0 = self.__low_mem_avg_repr(self.estimator, x0, covars)
+        avg_eta_1 = self.__low_mem_avg_repr(self.estimator, x1, covars)
+
+        avg_eta_pca_0 = self.__apply_PCA(avg_eta_0, self.pca)
+        avg_eta_pca_1 = self.__apply_PCA(avg_eta_1, self.pca)
+
+        avg_eta_pca_0 = self.__add_intercept_col(avg_eta_pca_0)
+        avg_eta_pca_1 = self.__add_intercept_col(avg_eta_pca_1)
+
+        var0 = avg_eta_pca_0 @ self.betas_variance @ avg_eta_pca_0.T
+        var1 = avg_eta_pca_1 @ self.betas_variance @ avg_eta_pca_1.T
+        cross_term = 2*(avg_eta_pca_1 @ self.betas_variance @ avg_eta_pca_0)
+
+        var = var0 + var1 - cross_term
+
+        return var
+
+    @staticmethod
+    def __construct_eta_bar(
+        estimator: QuantileIVEstimator,
+        covars: torch.Tensor,
+        ivs: torch.Tensor
+    ):
+        x_hats = estimator.exposure_network(_cat(ivs, covars))
         n_quantiles = x_hats.size(1)
 
         eta_bar = 0
-        avg_eta_bar = 0
         # Loop through all quantiles
         # Equivalent to the 1/K sum step in equation (6)
         for j in range(n_quantiles):
-            current_representation = self.parent.outcome_network.get_repr(
+            current_representation = estimator.outcome_network.get_repr(
                 _cat(x_hats[:, [j]], covars)
             ) / (n_quantiles)
 
-            """
-            avg_current_representation = self.__low_mem_avg_repr(
-                x_hats[:, [j]], covars
-                ) / (n_quantiles)
-            """
-
             eta_bar += current_representation
-            # avg_eta_bar += avg_current_representation
-        return eta_bar  # , avg_eta_bar
+        return eta_bar
 
-    def __construct_H(self, X: torch.Tensor, covars: torch.Tensor):
+    @staticmethod
+    def __construct_H(
+        estimator: QuantileIVEstimator,
+        X: torch.Tensor,
+        covars: torch.Tensor
+    ):
         # Get the representation of the exposure x
-        H = self.parent.outcome_network.get_repr(
+        H = estimator.outcome_network.get_repr(
             _cat(X, covars)
         )
-        # avg_H = self.__low_mem_avg_repr(X, covars)
 
-        return H    # , avg_H
+        return H
 
+    @staticmethod
     def __compute_IV_betas(
-        self,
         X: torch.Tensor,
         Z: torch.Tensor,
         Y: torch.Tensor
@@ -451,8 +564,8 @@ class QuantileIVLinearEstimator(MREstimatorWithUncertainty):
 
         return beta_IV_hat
 
+    @staticmethod
     def __compute_IV_betas_variance(
-        self,
         X: torch.Tensor,
         Z: torch.Tensor,
         Y: torch.Tensor,
@@ -471,40 +584,34 @@ class QuantileIVLinearEstimator(MREstimatorWithUncertainty):
 
         return var_beta_IV_hat
 
-    def __compute_avg_h_variance(
-        self,
-        X: torch.Tensor,
-        covars: torch.Tensor
-    ):
-        avg_eta = self.__low_mem_avg_repr(X, covars)
-        avg_eta_pca = self.__apply_PCA(avg_eta, self.pca)
-        avg_eta_pca = self.__add_intercept_col(avg_eta_pca)
-        return avg_eta_pca @ self.__betas_variance @ avg_eta_pca.T
-
-    def __fit_PCA(self, pca: PCA, to_fit: torch.Tensor):
+    @staticmethod
+    def __fit_PCA(pca: PCA, to_fit: torch.Tensor):
         if to_fit.requires_grad:
             to_fit = to_fit.detach()
         return pca.fit(to_fit.numpy())
 
-    def __apply_PCA(self, x: torch.Tensor, pca: PCA):
+    @staticmethod
+    def __apply_PCA(x: torch.Tensor, pca: PCA):
         x_pca = torch.from_numpy(
             pca.transform(x.detach().numpy())
         )
         return x_pca
 
-    def __add_intercept_col(self, x):
+    @staticmethod
+    def __add_intercept_col(x):
         return torch.hstack((torch.ones((x.size(0), 1)), x))
 
     # Estimated h_hat function
     def __iv_reg(self, x, covars):
-        betas = self.__betas
-        betas_var = self.__betas_variance
+        betas = self.betas
+        betas_var = self.betas_variance
 
-        eta = self.parent.outcome_network.get_repr(
+        pca = self.pca
+
+        eta = self.estimator.outcome_network.get_repr(
             _cat(x, covars)
         )
-
-        eta_pca = self.__apply_PCA(eta, self.pca)
+        eta_pca = self.__apply_PCA(eta, pca)
         eta_pca = self.__add_intercept_col(eta_pca)
 
         # IV regression using the estimated beta_IV_hat
@@ -519,10 +626,11 @@ class QuantileIVLinearEstimator(MREstimatorWithUncertainty):
 
         return h_hat, se_h_hat
 
+    # TODO: add alpha as parameter to ate and cate functions
     def ate(
         self,
         x0: torch.Tensor,
-        x1: torch.Tensor
+        x1: torch.Tensor,
     ) -> torch.Tensor:
         y1_ci = self.avg_iv_reg_function(x1)
         y0_ci = self.avg_iv_reg_function(x0)
@@ -548,24 +656,148 @@ class QuantileIVLinearEstimator(MREstimatorWithUncertainty):
         x1: torch.Tensor,
         covars: torch.Tensor
     ) -> torch.Tensor:
-        y1_ci = self.avg_iv_reg_function(x1, covars)
-        y0_ci = self.avg_iv_reg_function(x0, covars)
+        y1 = self.h(x1, covars)
+        y0 = self.h(x0, covars)
 
-        y1 = y1_ci[:, :, 0]
-        y0 = y0_ci[:, :, 0]
+        cate = y1 - y0
 
-        var1 = y1_ci[:, :, 1]
-        var2 = y0_ci[:, :, 1]
+        var = self.compute_avg_cate_variance(x0, x1, covars)
 
-        ate = y1 - y0
+        # add 2eta(covars,x1)V(u_hat)eta(covars,x0)
+        lower_ci = cate + stats.norm.ppf(0.05/2) * torch.sqrt(var)
+        upper_ci = cate + stats.norm.ppf(1 - 0.05/2) * torch.sqrt(var)
 
-        lower_ci = ate + stats.norm.ppf(0.05/2) * torch.sqrt(var1 + var2)
-        upper_ci = ate + stats.norm.ppf(1 - 0.05/2) * torch.sqrt(var1 + var2)
-
-        return torch.hstack([lower_ci, ate, upper_ci]).view(
+        return torch.hstack([lower_ci, cate, upper_ci]).view(
             -1, 1, 3
         )
 
+    @classmethod
+    def __get_id(cls):
+        id = uuid.uuid4()
+        comp_id = str(id).split("-")
+        return comp_id[1]
+
+
+class EnsembledQuantileIVLinearEstimator(MREstimatorWithUncertainty):
+    def __init__(
+        self,
+        estimators_path: str,
+        output_dir: str
+    ):
+        if os.path.exists(output_dir):
+            raise ValueError("Output directory already exists.")
+        os.mkdir(output_dir)
+        symlink_file = os.path.join(output_dir, "ensembling")
+        os.symlink(estimators_path, symlink_file)
+        self.estimators = QuantileIVLinearEstimator.create_instances(
+            estimators_path)
+        self.m = len(self.estimators)
+        self.ens_h = self.__iv_reg
+
+    def __iv_reg(
+        self,
+        x: torch.Tensor,
+        covars: torch.Tensor
+    ):
+        ys_ensemble: torch.Tensor = torch.zeros_like(x)
+        ys_list = []
+        Vw: torch.Tensor = torch.zeros_like(x)
+        Vb: torch.Tensor = torch.zeros_like(x)
+        for estimator in self.estimators:
+            ys, sd = estimator.h(x, covars)
+            ys_list.append(ys)
+
+            Vw += sd**2
+            ys_ensemble += ys
+
+        Vw /= self.m
+        ys_ensemble /= self.m
+
+        for j in range(0, self.m):
+            curr_Vb = (ys_list[j] - ys_ensemble) ** 2
+            Vb += curr_Vb
+
+        Vb /= (self.m - 1)
+        Vt = Vw + Vb + Vb/self.m
+
+        return ys_ensemble, torch.sqrt(Vt)
+
+    def iv_reg_function(
+        self,
+        x: torch.Tensor,
+        covars: Optional[torch.Tensor] = None,
+        alpha: float = 0.05
+    ):
+        ys_ensemble: torch.Tensor = torch.zeros_like(x)
+        ys_list = []
+        Vw: torch.Tensor = torch.zeros_like(x)
+        Vb: torch.Tensor = torch.zeros_like(x)
+        for estimator in self.estimators:
+            if covars is None:
+                if estimator.covars is not None:
+                    covars = estimator.covars
+            y_hat, sd = estimator.h(
+                x=x, covars=covars)
+            ys_ensemble += y_hat
+            ys_list.append(y_hat)
+            Vw += sd
+
+        Vw /= self.m
+        ys_ensemble /= self.m
+
+        for j in range(self.m):
+            curr_Vb = (ys_list[j] - ys_ensemble) ** 2
+            Vb += curr_Vb
+
+        Vb /= (self.m - 1)
+        Vt = Vw + Vb + Vb/self.m
+
+        sd_vt = torch.sqrt(Vt)
+        lower_ci = ys_ensemble + stats.norm.ppf(alpha/2) * sd_vt
+        upper_ci = ys_ensemble + stats.norm.ppf(1-alpha/2) * sd_vt
+
+        return torch.hstack([lower_ci, ys_ensemble, upper_ci]).view(-1, 1, 3)
+
+    def avg_iv_reg_function(
+        self,
+        x: torch.Tensor,
+        covars: Optional[torch.Tensor] = None,
+        low_memory: bool = True,
+        alpha: float = 0.05
+    ):
+        ys_ensemble: torch.Tensor = torch.zeros_like(x)
+        ys_list = []
+        Vw: torch.Tensor = torch.zeros_like(x)
+        Vb: torch.Tensor = torch.zeros_like(x)
+        for estimator in self.estimators:
+            if covars is None:
+                if estimator.covars is not None:
+                    covars = estimator.covars
+            y_hat, _ = estimator.h(
+                x=x, covars=covars)
+            avg_h_var = estimator.compute_avg_h_variance(x, covars)
+            avg_h_var = torch.clip(
+                torch.diag(avg_h_var), 1e-200
+            ).squeeze().reshape(-1, 1)
+            ys_ensemble += y_hat
+            ys_list.append(y_hat)
+            Vw += avg_h_var
+
+        Vw /= self.m
+        ys_ensemble /= self.m
+
+        for j in range(self.m):
+            curr_Vb = (ys_list[j] - ys_ensemble) ** 2
+            Vb += curr_Vb
+
+        Vb /= (self.m - 1)
+        Vt = Vw + Vb + Vb/self.m
+
+        sd_vt = torch.sqrt(Vt)
+        lower_ci = ys_ensemble + stats.norm.ppf(alpha/2) * sd_vt
+        upper_ci = ys_ensemble + stats.norm.ppf(1-alpha/2) * sd_vt
+
+        return torch.hstack([lower_ci, ys_ensemble, upper_ci]).view(-1, 1, 3)
 
 
 def main(args: argparse.Namespace) -> None:
@@ -715,7 +947,7 @@ def fit_quantile_iv(
     outcome_add_input_batchnorm: bool = DEFAULTS["outcome_add_input_batchnorm"],  # type: ignore # noqa: E501
     activation: str = DEFAULTS["activation"],  # type: ignore
     accelerator: str = DEFAULTS["accelerator"],  # type: ignore
-    wandb_project: Optional[str] = None,
+    wandb_project: Optional[str] = None
 ) -> QuantileIVEstimator:
     if resample:
         dataset = resample_dataset(dataset)  # type: ignore
@@ -723,7 +955,7 @@ def fit_quantile_iv(
             stage2_dataset = resample_dataset(stage2_dataset)  # type: ignore
 
     activation_str = activation
-    activation_cls = getattr(nn, activation_str)
+    activation_self = getattr(nn, activation_str)
     if activation_str is None:
         raise ValueError(
             f"Requested activation: '{activation_str}' is not a class in "
@@ -732,7 +964,7 @@ def fit_quantile_iv(
     else:
         # Attempt to instantiate. We don't support parametrized activations
         # with no default values, so this may fail.
-        activation_inst = activation_cls()
+        activation_inst = activation_self()
 
     # Create output directory if needed.
     if not os.path.isdir(output_dir):
@@ -746,7 +978,7 @@ def fit_quantile_iv(
     meta["activation"] = activation_str  # Serialize str not class.
     del meta["dataset"]  # We don't serialize the dataset.
     del meta["stage2_dataset"]
-    del meta["activation_cls"]
+    del meta["activation_self"]
     del meta["activation_inst"]
 
     covars = dataset.save_covariables(output_dir)
