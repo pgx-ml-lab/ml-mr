@@ -31,7 +31,7 @@ def parse_args():
         help="Set the reference comparator for the ATE/CATE.",
         type=float, default=0.0
     )
-    parser.add_argument("--effect-unit-increase", action="store_true")
+    parser.add_argument("--effect-fixed-increase", type=float, default=None)
     parser.add_argument("--alpha", default=0.05, type=float)
     parser.add_argument("--iv-reg", action="store_true")
 
@@ -112,16 +112,18 @@ def main():
                 xs.reshape(-1, 1), ensemble.covars, reduce=False
             )
         else:
-            if args.effect_unit_increase:
+            if args.effect_fixed_increase is not None:
                 ate = ensemble.ate(
-                    xs.reshape(-1, 1), xs.reshape(-1, 1) + 1, reduce=False
+                    xs.reshape(-1, 1),
+                    xs.reshape(-1, 1) + args.effect_fixed_increase,
+                    reduce=False
                 )
             else:
                 ate = ensemble.ate(
                     torch.tensor([[args.x0]]), xs.reshape(-1, 1), reduce=False
                 )
         plot(xs, ate, args.output, args.show_all, args.do_exp,
-             args.iv_reg, args.color, args.alpha, args.effect_unit_increase)
+             args.iv_reg, args.color, args.alpha, args.effect_fixed_increase)
 
     else:
         # For all CATE, plot.
@@ -142,9 +144,10 @@ def main():
                     xs.reshape(-1, 1), covars=covars, reduce=False
                 )
             else:
-                if args.effect_unit_increase:
+                if args.effect_fixed_increase is not None:
                     cur_cates = ensemble.cate(
-                        xs.reshape(-1, 1), xs.reshape(-1, 1) + 1,
+                        xs.reshape(-1, 1),
+                        xs.reshape(-1, 1) + args.effect_fixed_increase,
                         covars=covars, reduce=False
                     )
                 else:
@@ -157,7 +160,7 @@ def main():
                 xs, cur_cates, args.output, args.show_all, args.do_exp,
                 args.iv_reg,
                 args.color if args.color is not None else next(color_gen),
-                args.alpha, args.effect_unit_increase, label=f"{col} = {val}"
+                args.alpha, args.effect_fixed_increase, label=f"{col} = {val}"
             )
 
             if len(givens) >= 2:
@@ -178,7 +181,7 @@ def parse_given(given):
 
 
 def plot(xs, estimates, output, show_all=False, do_exp=False, iv_reg=False,
-         color=None, alpha=0.05, effect_unit_increase=False, label=None):
+         color=None, alpha=0.05, effect_fixed_increase=None, label=None):
     if show_all:
         n_estimators = estimates.shape[1]
         for j in range(n_estimators):
@@ -215,17 +218,21 @@ def plot(xs, estimates, output, show_all=False, do_exp=False, iv_reg=False,
     if label:
         plt.legend()
 
-    if effect_unit_increase:
+    if effect_fixed_increase is not None:
         plt.xlabel(r"$X_0$")
     else:
         plt.xlabel("X")
 
     if iv_reg:
         plt.ylabel("IV Regression function")
-    elif effect_unit_increase:
-        plt.ylabel("Average treatment effect (X compared to X+1)")
+    elif effect_fixed_increase is not None:
+        plt.ylabel(
+            "Average treatment effect (X compared to X+{:.2f})".format(
+                effect_fixed_increase
+            )
+        )
     else:
-        plt.ylabel("Average treatment effect (compared to X=0)")
+        plt.ylabel("Average treatment effect (compared to reference value)")
 
     if not iv_reg:
         plt.axhline(y=1 if do_exp else 0, ls="-.", lw=1, color="#333333")
