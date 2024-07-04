@@ -44,7 +44,7 @@ def parse_args():
 
     args = parser.parse_args()
 
-    if args.effect_unit_increase and args.iv_reg:
+    if args.effect_fixed_increase is not None and args.iv_reg:
         raise ValueError(
             "--iv-reg plots the raw regression function, there is no concept "
             "of reference point."
