@@ -21,6 +21,10 @@ def parse_args():
     parser.add_argument("--do-exp", action="store_true")
     parser.add_argument("--show-all", action="store_true")
     parser.add_argument("--color", default=None)
+    parser.add_argument(
+        "--domain", default=None,
+        help="Custom range for plotting in the form of (-2.3, 4.5)"
+    )
     parser.add_argument("--domain-95", action="store_true")
     parser.add_argument(
         "--x0", "-x0",
@@ -83,7 +87,12 @@ def main():
 
     ensemble = EnsembleMREstimator(*estimators)
 
-    if args.domain_95:
+    if args.domain:
+        low, high = ((
+            float(bound) for bound in args.domain.strip("()").split(",")
+        ))
+        xs = torch.linspace(low, high, 100)
+    elif args.domain_95:
         xs = torch.linspace(*domain95, 100)
     else:
         xs = torch.linspace(*domain, 100)
