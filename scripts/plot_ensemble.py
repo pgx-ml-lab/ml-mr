@@ -102,7 +102,11 @@ def main():
         scale = args.scale if args.scale else 1
         scaler = RescaledMREstimator(ensemble, shift, scale)
 
-        xs = scaler.z_to_x(xs)
+        if args.domain is None:
+            # If the domain is provided explicitly, we assume it's in the units
+            # of the plot.
+            xs = scaler.z_to_x(xs)
+
         ensemble = scaler
 
     if args.given is None:
