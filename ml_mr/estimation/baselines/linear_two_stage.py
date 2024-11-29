@@ -26,7 +26,10 @@ class TwoSLSEstimator(MREstimator):
         with open(os.path.join(filename, "2sls_fit.json")) as f:
             params = json.load(f)
 
-        return cls(**params)
+        with open(os.path.join(filename, "meta.json")) as f:
+            meta = json.load(f)
+
+        return cls(**params, meta=meta)
 
 
 def fit_2sls(
@@ -75,7 +78,7 @@ def twosls(
     z_cols: Iterable[str],
     covar_cols: Optional[Iterable[str]] = None,
     full: bool = False
-) -> Union[IVResults, Tuple[float, float]]:
+) -> Union[IVResults, Tuple[pd.Series, pd.Series]]:
     df = df.copy()
     df["const"] = 1
 
