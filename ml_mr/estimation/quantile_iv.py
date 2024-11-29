@@ -16,7 +16,11 @@ from torch.utils.data import DataLoader, Dataset, random_split
 import pytorch_lightning as pl
 
 from ..logging import info
-from ..utils import default_validate_args, parse_project_and_run_name
+from ..utils import (
+    default_validate_args,
+    parse_project_and_run_name,
+    initialize_meta
+)
 from ..utils.models import MLP, OutcomeMLPBase
 from ..utils.quantiles import QuantileLossMulti
 from ..utils.training import train_model, resample_dataset
@@ -461,8 +465,9 @@ def fit_quantile_iv(
         os.makedirs(output_dir)
 
     # Metadata dictionary that will be saved alongside the results.
-    meta = dict(locals())
+    meta = initialize_meta()
     meta["model"] = "quantile_iv"
+    meta.update(dict(locals()))
     meta.update(dataset.exposure_descriptive_statistics())
     meta["covariable_labels"] = dataset.covariable_labels
     meta["activation"] = activation_str  # Serialize str not class.
