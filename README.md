@@ -340,3 +340,53 @@ select * from run_parameters;
 ```
 
 You can then start or resume the sweep using ``ml-mr sweep ml_mr_sweep_runs.db --n-workers N``.
+
+# Scaling
+
+Rescaling variables can help neural network training. We often use standardization (i.e. rescaling variable to have mean 0 and standard deviation 1) or min-max rescaling to the -1 to 1 range. Then, we rescale the estimator to present results on the original (data) scale.
+
+_ml-mr_ provides a utility class to transform variables using a scale and shift parameter:
+
+$$
+x' = x \cdot \text{scale} + \text{shift}
+$$
+
+```
+from ml_mr.estimation import RescaledMREstimator
+rescaled = RescaledMREstimator(
+    estimator,
+    shift=shift,
+    scale=scale
+)
+```
+
+For example, to rescale a variable $x$ to the -1, 1 interval, we use the following transformation:
+
+$$
+x' = 2 \left( \frac{x - l}{u - l} \right) - 1
+$$
+
+With $l := \min(x)$ and $u := \max(x)$
+
+Rearraging the terms to express this transformation as shifting and scaling, we can see that the scaling factor is:
+
+$$
+\text{scale} := \frac{2}{u - l}
+$$
+
+$$
+\text{shift} := \frac{-l-u}{u-l}
+$$
+
+Hence, we could use
+
+```
+from ml_mr.estimation import RescaledMREstimator
+rescaled = RescaledMREstimator(
+    estimator,
+    shift=(-l - u) / (u - l),
+    scale=2 / (u - l)
+)
+```
+
+to express the fitted estimator on the original scale.
