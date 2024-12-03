@@ -465,9 +465,9 @@ def fit_quantile_iv(
         os.makedirs(output_dir)
 
     # Metadata dictionary that will be saved alongside the results.
-    meta = initialize_meta()
+    meta = dict(locals())
     meta["model"] = "quantile_iv"
-    meta.update(dict(locals()))
+    meta.update(initialize_meta())
     meta.update(dataset.exposure_descriptive_statistics())
     meta["covariable_labels"] = dataset.covariable_labels
     meta["activation"] = activation_str  # Serialize str not class.
@@ -565,7 +565,13 @@ def fit_quantile_iv(
     # Save the metadata, estimator statistics and log artifact to WandB if
     # required.
     with open(os.path.join(output_dir, "meta.json"), "wt") as f:
-        json.dump(meta, f)
+        try:
+            json.dump(meta, f)
+        except ValueError as e:
+            print("Error serializing metadata.")
+            print(meta)
+            print(e)
+            raise e
 
     if not fast:
         save_estimator_statistics(
