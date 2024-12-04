@@ -61,6 +61,7 @@ def main(args: argparse.Namespace) -> None:
         dataset=dataset,
         wandb_project=args.wandb_project,
         binary_outcome=args.outcome_type == "binary",
+        resample=args.resample,
         **kwargs,
     )
 
@@ -284,6 +285,12 @@ class DeLIVREstimator(MREstimator):
 
 def configure_argparse(parser) -> None:
     parser.add_argument("--output-dir", default=DEFAULTS["output_dir"])
+
+    parser.add_argument(
+        "--resample",
+        help="Resample with replacement to do bootstrapping.",
+        action="store_true"
+    )
 
     parser.add_argument(
         "--outcome-type",
