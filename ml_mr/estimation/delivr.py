@@ -292,7 +292,7 @@ def configure_argparse(parser) -> None:
 
     MLP.add_mlp_arguments(
         parser,
-        "Outcome Model Parameters",
+        None,
         defaults={
             "hidden": DEFAULTS["hidden"],
             "batch-size": DEFAULTS["batch_size"],
