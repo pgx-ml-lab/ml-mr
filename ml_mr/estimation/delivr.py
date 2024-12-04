@@ -9,8 +9,8 @@ Biostatistics, January. https://doi.org/10.1093/biostatistics/kxac051.
 """
 
 import argparse
-import os
 import json
+import os
 from typing import Iterable, List, Optional
 
 import torch
@@ -18,12 +18,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, random_split
 
-from ..utils import _cat, default_validate_args, parse_project_and_run_name
+from ..utils import (_cat, default_validate_args, initialize_meta,
+                     parse_project_and_run_name)
+from ..utils.data import FullBatchDataLoader, IVDataset, IVDatasetWithGenotypes
 from ..utils.linear import ridge_regression
 from ..utils.models import MLP
-from ..utils.training import train_model, resample_dataset
+from ..utils.training import resample_dataset, train_model
 from .core import MREstimator
-from ..utils.data import FullBatchDataLoader, IVDatasetWithGenotypes, IVDataset
 
 DEFAULTS = {
     "hidden": [64, 32],
@@ -91,6 +92,7 @@ def fit_delivr(
     # Metadata dictionary that will be saved alongside the results.
     meta = dict(locals())
     meta["model"] = "delivr"
+    meta.update(initialize_meta())
     meta.update(dataset.exposure_descriptive_statistics())
     meta["covariable_labels"] = dataset.covariable_labels
     del meta["dataset"]
