@@ -208,7 +208,7 @@ class RescaledMREstimator(MREstimator):
         self.scale = scale
 
         # Mimic properties.
-        self.covars = self.parent.covars
+        self.covars = getattr(self.parent, "covars")
 
     def x_to_z(self, x):
         # z = x * scale + shift
