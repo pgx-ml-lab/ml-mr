@@ -13,6 +13,8 @@ from .core import MREstimatorWithUncertainty
 import glob
 from tqdm import tqdm
 
+import json
+
 from ml_mr.estimation.quantile_iv import QuantileIVEstimator
 
 
@@ -155,17 +157,24 @@ class QuantileIVLinearEstimator(MREstimatorWithUncertainty):
         is_meta = os.path.isfile(meta_path)
 
         estimators = {}
+        skipped_log = {}
+        skipped_fits_list = []
+        fit_skipped = 0
         if is_meta:
             estimators[os.path.abspath(qiv_estimator_path)] = (
                 QuantileIVEstimator.from_results(qiv_estimator_path)
             )
         else:
             for e in glob.glob(os.path.join(qiv_estimator_path, "*")):
-                try:
-                    estimator = QuantileIVEstimator.from_results(e)
-                except FileNotFoundError:
+                estimator = QuantileIVEstimator.from_results(e)
+                if estimator is None:
+                    print(f"SKIPPING {os.path.abspath(e)}. meta.json was not \
+                        found.")
+                    skipped_fits_list.append(os.path.abspath(e))
+                    fit_skipped += 1
                     continue
                 estimators[os.path.abspath(e)] = estimator
+                
 
         if len(estimators) == 0:
             raise ValueError("No QuantileIVEstimator were found in the\
@@ -223,6 +232,15 @@ class QuantileIVLinearEstimator(MREstimatorWithUncertainty):
             torch.save(betas_variance, betas_variance_file_path)
 
             QIVLs.append(cls(output_dir_estimator))
+        
+        skipped_log["Skipped fits"] = {
+            "Skipped": skipped_fits_list,
+            "Reason": "Missing meta.json file."
+        }
+        skipped_log["Fit skipped"] = fit_skipped
+            
+        with open('skipped_log', 'w') as f:
+            json.dump(skipped_log, f)
 
         return QIVLs
 
