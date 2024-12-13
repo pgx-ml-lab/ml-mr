@@ -239,7 +239,7 @@ class QuantileIVLinearEstimator(MREstimatorWithUncertainty):
         }
         skipped_log["Fit skipped"] = fit_skipped
             
-        with open('skipped_log', 'w') as f:
+        with open(os.path.join(output_dir, "skipped_log.json"), 'w') as f:
             json.dump(skipped_log, f)
 
         return QIVLs
