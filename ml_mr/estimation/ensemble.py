@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Callable, Union
 
 from .core import MREstimator, MREstimatorWithUncertainty, load_estimator
 from ..logging import info, warn
@@ -7,6 +7,47 @@ import torch
 
 import glob
 from typing import Iterable
+
+
+def bs_quantile_reduce(mat: torch.Tensor, alpha: float):
+    """Get quantile CIs for bootstrapped statistics."""
+    return torch.quantile(
+        mat,
+        torch.tensor([alpha / 2, 0.5, 1 - alpha / 2]),
+        dim=1
+    ).T.reshape(-1, 1, 3)
+
+
+def bs_parametric_reduce(mat: torch.Tensor, alpha: float):
+    import scipy.stats
+
+    means = torch.mean(mat, dim=1)
+    ses = torch.std(mat, dim=1)
+    z = scipy.stats.norm.ppf(1 - alpha / 2)
+
+    return torch.stack(
+        (
+            means - z * ses,
+            means,
+            means + z * ses
+        )
+    ).T.reshape(-1, 1, 3)
+
+
+# Type alias for functions used to summarize bootstrap results as CIs.
+REDUCE_TYPE = Union[bool, Callable[[torch.Tensor, float], torch.Tensor]]
+
+
+def _apply_reduce(
+    mat: torch.Tensor, alpha: float, reduce: REDUCE_TYPE
+) -> torch.Tensor:
+    if reduce is False:
+        return mat
+    elif reduce is True:
+        # Default reducer is quantile CI.
+        return bs_quantile_reduce(mat, alpha)
+    else:
+        return reduce(mat, alpha)
 
 
 class EnsembleMREstimator(MREstimatorWithUncertainty):
@@ -38,8 +79,8 @@ class EnsembleMREstimator(MREstimatorWithUncertainty):
         self,
         x0: torch.Tensor,
         x1: torch.Tensor,
-        alpha: float = 0.1,
-        reduce: bool = True
+        alpha: float = 0.05,
+        reduce: REDUCE_TYPE = True
     ) -> torch.Tensor:
         ates = []
         for estimator in self.estimators:
@@ -53,23 +94,15 @@ class EnsembleMREstimator(MREstimatorWithUncertainty):
             ates.append(mu1 - mu0)
 
         combined = torch.concat(ates, dim=1)
-
-        if not reduce:
-            return combined
-
-        return torch.quantile(
-            combined,
-            torch.tensor([alpha / 2, 0.5, 1 - alpha / 2]),
-            dim=1
-        ).T.reshape(-1, 1, 3)
+        return _apply_reduce(combined, alpha, reduce)
 
     def cate(
         self,
         x0: torch.Tensor,
         x1: torch.Tensor,
         covars: torch.Tensor,
-        alpha: float = 0.1,
-        reduce: bool = True
+        alpha: float = 0.05,
+        reduce: REDUCE_TYPE = True
     ) -> torch.Tensor:
         cates = []
         for estimator in self.estimators:
@@ -79,15 +112,7 @@ class EnsembleMREstimator(MREstimatorWithUncertainty):
                 cates.append(estimator.cate(x0, x1, covars))
 
         combined = torch.concat(cates, dim=1)
-
-        if not reduce:
-            return combined
-
-        return torch.quantile(
-            combined,
-            torch.tensor([alpha / 2, 0.5, 1 - alpha / 2]),
-            dim=1
-        ).T.reshape(-1, 1, 3)
+        return _apply_reduce(combined, alpha, reduce)
 
     @staticmethod
     def _call_estimators(
@@ -95,8 +120,8 @@ class EnsembleMREstimator(MREstimatorWithUncertainty):
         func_name: str,
         x: torch.Tensor,
         covars: Optional[torch.Tensor],
-        alpha: float = 0.1,
-        reduce: bool = True,
+        alpha: float = 0.05,
+        reduce: REDUCE_TYPE = True,
     ):
         estimates = []
         for estimator in estimators:
@@ -113,22 +138,14 @@ class EnsembleMREstimator(MREstimatorWithUncertainty):
             estimates.append(cur)
 
         combined = torch.concat(estimates, dim=1)
-
-        if not reduce:
-            return combined
-
-        return torch.quantile(
-            combined,
-            torch.tensor([alpha / 2, 0.5, 1 - alpha / 2]),
-            dim=1
-        ).T.reshape(-1, 1, 3)
+        return _apply_reduce(combined, alpha, reduce)
 
     def iv_reg_function(
         self,
         x: torch.Tensor,
         covars: Optional[torch.Tensor] = None,
-        alpha: float = 0.1,
-        reduce: bool = True
+        alpha: float = 0.05,
+        reduce: REDUCE_TYPE = True
     ) -> torch.Tensor:
         return self._call_estimators(
             self.estimators, "iv_reg_function", x, covars, alpha, reduce
@@ -139,8 +156,8 @@ class EnsembleMREstimator(MREstimatorWithUncertainty):
         x: torch.Tensor,
         covars: Optional[torch.Tensor] = None,
         low_memory: bool = False,
-        alpha: float = 0.1,
-        reduce: bool = True
+        alpha: float = 0.05,
+        reduce: REDUCE_TYPE = True
     ) -> torch.Tensor:
         return self._call_estimators(
             self.estimators, "avg_iv_reg_function", x, covars, alpha, reduce

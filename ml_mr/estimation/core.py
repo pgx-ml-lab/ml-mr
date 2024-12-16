@@ -221,9 +221,13 @@ class RescaledMREstimator(MREstimator):
     def iv_reg_function(
         self,
         x: torch.Tensor,
-        covars: Optional[torch.Tensor] = None
+        covars: Optional[torch.Tensor] = None,
+        *args, **kwargs
     ) -> torch.Tensor:
-        return self.parent.iv_reg_function(self.x_to_z(x), covars)
+        return self.parent.iv_reg_function(
+            self.x_to_z(x), covars,
+            *args, **kwargs
+        )
 
     def avg_iv_reg_function(
         self,
