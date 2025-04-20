@@ -264,21 +264,24 @@ class QuantileIVEstimator(MREstimator):
             return self.outcome_network.x_to_y(x, covars)
 
     @classmethod
-    def from_results(cls, dir_name: str) -> "QuantileIVEstimator":
-        with open(os.path.join(dir_name, "meta.json"), "rt") as f:
-            meta = json.load(f)
+    def from_results(self, dir_name: str) -> "QuantileIVEstimator":
+        try:
+            with open(os.path.join(dir_name, "meta.json"), "rt") as f:
+                meta = json.load(f)
+        except FileNotFoundError:
+            return None
 
         try:
             covars = torch.load(os.path.join(dir_name, "covariables.pt"))
         except FileNotFoundError:
             covars = None
 
-        exposure_net_cls: Type[pl.LightningModule] = (
+        exposure_net_self: Type[pl.LightningModule] = (
             ExposureNMQN if meta.get("nmqn", False)
             else ExposureQuantileMLP
         )
 
-        exposure_network = exposure_net_cls.load_from_checkpoint(
+        exposure_network = exposure_net_self.load_from_checkpoint(
             os.path.join(dir_name, "exposure_network.ckpt"),
             map_location=torch.device("cpu")
         )
@@ -291,7 +294,7 @@ class QuantileIVEstimator(MREstimator):
 
         outcome_network.eval()  # type: ignore
 
-        return cls(exposure_network, outcome_network, meta=meta, covars=covars)
+        return self(exposure_network, outcome_network, meta=meta, covars=covars)
 
 
 def main(args: argparse.Namespace) -> None:
@@ -441,7 +444,7 @@ def fit_quantile_iv(
     outcome_add_input_batchnorm: bool = DEFAULTS["outcome_add_input_batchnorm"],  # type: ignore # noqa: E501
     activation: str = DEFAULTS["activation"],  # type: ignore
     accelerator: str = DEFAULTS["accelerator"],  # type: ignore
-    wandb_project: Optional[str] = None,
+    wandb_project: Optional[str] = None
 ) -> QuantileIVEstimator:
     if resample:
         dataset = resample_dataset(dataset)  # type: ignore
@@ -449,7 +452,7 @@ def fit_quantile_iv(
             stage2_dataset = resample_dataset(stage2_dataset)  # type: ignore
 
     activation_str = activation
-    activation_cls = getattr(nn, activation_str)
+    activation_self = getattr(nn, activation_str)
     if activation_str is None:
         raise ValueError(
             f"Requested activation: '{activation_str}' is not a class in "
@@ -458,7 +461,7 @@ def fit_quantile_iv(
     else:
         # Attempt to instantiate. We don't support parametrized activations
         # with no default values, so this may fail.
-        activation_inst = activation_cls()
+        activation_inst = activation_self()
 
     # Create output directory if needed.
     if not os.path.isdir(output_dir):
@@ -473,7 +476,7 @@ def fit_quantile_iv(
     meta["activation"] = activation_str  # Serialize str not class.
     del meta["dataset"]  # We don't serialize the dataset.
     del meta["stage2_dataset"]
-    del meta["activation_cls"]
+    del meta["activation_self"]
     del meta["activation_inst"]
 
     covars = dataset.save_covariables(output_dir)
