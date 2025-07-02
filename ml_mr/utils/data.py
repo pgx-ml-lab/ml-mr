@@ -40,10 +40,20 @@ class IVDataset(Dataset):
         ivs: torch.Tensor,
         covariables: torch.Tensor = torch.Tensor(),
         covariable_labels: Optional[Iterable[str]] = None,
-        sampling_weights: Optional[torch.Tensor] = None
+        sampling_weights: Optional[torch.Tensor] = None,
+        outcome_dim: Optional[int] = None
     ):
         self.exposure = exposure.reshape(-1, 1)
-        self.outcome = outcome.reshape(-1, 1)
+        
+        # Auto-detect outcome dimension if not provided
+        if outcome_dim is None:
+            if outcome.dim() == 1:
+                outcome_dim = 1
+            else:
+                outcome_dim = outcome.size(-1)
+        
+        self.outcome = outcome.reshape(-1, outcome_dim)
+        self.outcome_dim = outcome_dim
         self.ivs = ivs
         self.covariables = covariables
         self.sampling_weights = sampling_weights
