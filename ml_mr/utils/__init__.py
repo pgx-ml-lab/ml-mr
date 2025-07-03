@@ -8,7 +8,7 @@ from typing import Tuple, Optional, Dict, Any
 
 import torch
 
-from ..logging import critical
+from ..log_utils import critical
 
 
 def _cat(*tensors) -> torch.Tensor:

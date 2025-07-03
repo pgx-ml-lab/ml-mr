@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, random_split
 
-from ..logging import info
+from ..log_utils import info
 from ..utils import default_validate_args, parse_project_and_run_name, _cat
 from ..utils.data import (IVDataset, IVDatasetWithGenotypes,
                           SupervisedLearningWrapper)

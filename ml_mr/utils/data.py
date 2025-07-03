@@ -9,7 +9,7 @@ import numpy as np
 from torch.utils.data import Dataset, DataLoader
 import torch
 
-from ..logging import warn
+from ..log_utils import warn
 
 try:
     from pytorch_genotypes.dataset import (BACKENDS, GeneticDatasetBackend,

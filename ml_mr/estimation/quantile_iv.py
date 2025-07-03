@@ -15,7 +15,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, random_split
 import pytorch_lightning as pl
 
-from ..logging import info
+from ..log_utils import info
 from ..utils import (
     default_validate_args,
     parse_project_and_run_name,
@@ -774,4 +774,12 @@ def configure_argparse(parser) -> None:
 
 # Standard names for estimators.
 estimate = fit_quantile_iv
+load = QuantileIVEstimator.from_results
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    configure_argparse(parser)
+    args = parser.parse_args()
+    main(args)
+
 load = QuantileIVEstimator.from_results
