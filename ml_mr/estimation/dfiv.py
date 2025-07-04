@@ -53,7 +53,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, random_split
 
-from ..logging import warn
+from ..log_utils import warn
 from ..utils import default_validate_args
 from ..utils.conformal import OutcomeResidualPrediction
 from ..utils.data import IVDataset, IVDatasetWithGenotypes

@@ -10,7 +10,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import Logger
-from ..logging import info
+from ..log_utils import info
 from . import parse_project_and_run_name
 from .data import Dataset, FullBatchDataLoader
 

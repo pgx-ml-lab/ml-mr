@@ -9,7 +9,7 @@ import numpy as np
 from torch.utils.data import Dataset, DataLoader
 import torch
 
-from ..logging import warn
+from ..log_utils import warn
 
 try:
     from pytorch_genotypes.dataset import (BACKENDS, GeneticDatasetBackend,
@@ -44,16 +44,8 @@ class IVDataset(Dataset):
         outcome_dim: Optional[int] = None
     ):
         self.exposure = exposure.reshape(-1, 1)
-        
-        # Auto-detect outcome dimension if not provided
-        if outcome_dim is None:
-            if outcome.dim() == 1:
-                outcome_dim = 1
-            else:
-                outcome_dim = outcome.size(-1)
-        
-        self.outcome = outcome.reshape(-1, outcome_dim)
-        self.outcome_dim = outcome_dim
+        self.outcome = outcome
+
         self.ivs = ivs
         self.covariables = covariables
         self.sampling_weights = sampling_weights
@@ -181,17 +173,23 @@ class IVDataset(Dataset):
     def from_dataframe(
         dataframe: pd.DataFrame,
         exposure_col: Optional[str],
-        outcome_col: Optional[str],
+        outcome_col: Optional[List[str]],
         iv_cols: Iterable[str],
         covariable_cols: Iterable[str] = [],
         sampling_weights_col: Optional[str] = None,
     ) -> "IVDataset":
         # We'll do complete case analysis if the user provides a df with NAs.
 
-        keep_cols = [col for col in itertools.chain(
-            [exposure_col, outcome_col], iv_cols, covariable_cols,
-            [sampling_weights_col]
-        ) if col is not None]
+        # Convert single string exposure to list of one element
+        exposure_cols = [exposure_col] if isinstance(exposure_col, str) else exposure_col
+        outcome_cols = outcome_col if isinstance(outcome_col, list) else [outcome_col]
+        covariable_cols = covariable_cols or []
+        iv_cols = iv_cols or []
+        sampling_weights_col = [sampling_weights_col] if sampling_weights_col else []
+
+        keep_cols = list(itertools.chain(
+            exposure_cols, outcome_cols, iv_cols, covariable_cols, sampling_weights_col
+        ))
 
         dataframe = dataframe[keep_cols]
         if dataframe.isna().values.any():
@@ -204,17 +202,18 @@ class IVDataset(Dataset):
                 f"values from the input data."
             )
 
-        if exposure_col is not None:
-            exposure = torch.from_numpy(dataframe[exposure_col].values).float()
+        # Keep 2D shape even if single column
+        if exposure_cols:
+            exposure = torch.from_numpy(dataframe[exposure_cols].values).float()
         else:
             exposure = torch.Tensor()
 
-        if outcome_col is not None:
-            outcome = torch.from_numpy(dataframe[outcome_col].values).float()
+        if outcome_cols:
+            outcome = torch.from_numpy(dataframe[outcome_cols].values).float()
         else:
             outcome = torch.Tensor()
 
-        if sampling_weights_col is not None:
+        if sampling_weights_col:
             sampling_weights = torch.from_numpy(
                 dataframe[sampling_weights_col].values
             ).float()
@@ -264,7 +263,7 @@ class IVDataset(Dataset):
         return IVDataset.from_dataframe(
             data,
             exposure_col=args.exposure,
-            outcome_col=args.outcome,
+            outcome_col=args.outcomes,
             iv_cols=args.instruments,
             covariable_cols=args.covariables,
             sampling_weights_col=args.resample_weights_col
@@ -306,22 +305,20 @@ class IVDataset(Dataset):
         )
 
         parser.add_argument(
-            "--exposure",
-            "-x",
-            help="The exposure (X). This should be a column name in the data "
-            "file.",
+            "--exposure", "-x",
+            nargs="+",
             required=True,
-            type=str,
+            help="List of exposure column(s), e.g. T1 T2"
         )
 
         parser.add_argument(
-            "--outcome",
-            "-y",
-            help="The outcome (Y). This should be a column name in the data "
-            "file.",
+            "--outcomes", "-y",
+            nargs="+",
+            help="List of outcome columns (e.g. Y1 Y2 Y3).",
             required=True,
-            type=str,
+            type=str
         )
+
 
         parser.add_argument(
             "--resample-weights-col",
@@ -461,14 +458,14 @@ class IVDatasetWithGenotypes(IVDataset):
             phenotypes_sample_id_column=args.sample_id_col,
             exogenous_columns=itertools.chain(
                 args.instruments, args.covariables,
-                [args.exposure, args.outcome]
+                [args.exposure, args.outcomes]
             ),
         )
 
         return IVDatasetWithGenotypes(
             genetic_dataset=dataset,
             exposure_col=args.exposure,
-            outcome_col=args.outcome,
+            outcome_col=args.outcomes,
             iv_cols=args.instruments,
             covariable_cols=args.covariables
         )
