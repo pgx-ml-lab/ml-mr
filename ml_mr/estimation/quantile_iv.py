@@ -53,7 +53,6 @@ DEFAULTS = {
     "output_dir": "quantile_iv_estimate",
     "activation": "GELU",
     "outcome_dim": 3,
-
 }
 # fmt: on
 
@@ -254,7 +253,6 @@ class OutcomeMLP(OutcomeMLPBase):
 
         # Get outcome dimension from the network's output layer
         outcome_dim = self.mlp.mlp[-1].out_features
-        y_hat = torch.zeros((n, outcome_dim), device=self.device)  # type: ignore
 
         for j in range(n_q):
             y_hat += self.mlp(_cat(x_hats[:, [j]], covars)) / n_q
@@ -414,18 +412,6 @@ def train_outcome_model(
 
     # Get outcome dimension from training data
     outcome_dim = train_dataset[0][1].numel()
-
-    model = OutcomeMLP(
-        exposure_network=exposure_network,
-        input_size=1 + n_covars,
-        lr=learning_rate,
-        weight_decay=weight_decay,
-        hidden=hidden,
-        add_input_layer_batchnorm=add_input_batchnorm,
-        binary_outcome=binary_outcome,
-        activations=[activation],
-        outcome_dim=outcome_dim,
-    )
 
     info(f"Loss: {model.loss}")
 
@@ -687,7 +673,6 @@ def save_estimator_statistics(
     ys = estimator.avg_iv_reg_function(xs)
     print(f"[save_estimator_statistics] ys shape: {ys.shape}")
 
-
     # Prepare data dictionary for CSV
     df_data = {"x": xs.reshape(-1).numpy()}
 
@@ -734,6 +719,13 @@ def configure_argparse(parser) -> None:
     )
 
     parser.add_argument("--output-dir", default=DEFAULTS["output_dir"])
+    
+    parser.add_argument(
+        "--outcome-dim",
+        type=int,
+        default=DEFAULTS["outcome_dim"],
+        help="Number of outcome dimensions for multivariable outcomes."
+    )
 
     parser.add_argument(
         "--outcome-dim",

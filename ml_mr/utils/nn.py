@@ -307,7 +307,8 @@ class OutcomeMLPBase(MLP):
         sqr: bool = False,
         add_input_layer_batchnorm: bool = False,
         add_hidden_layer_batchnorm: bool = False,
-        activations: Iterable[nn.Module] = [nn.GELU()]
+        activations: Iterable[nn.Module] = [nn.GELU()],
+        outcome_dim: int = 1
     ):
         if sqr:
             loss: Callable = quantile_loss
@@ -319,7 +320,7 @@ class OutcomeMLPBase(MLP):
         super().__init__(
             input_size=input_size if not sqr else input_size + 1,
             hidden=hidden,
-            out=1,
+            out=outcome_dim,
             add_input_layer_batchnorm=add_input_layer_batchnorm,
             add_hidden_layer_batchnorm=add_hidden_layer_batchnorm,
             activations=activations,
